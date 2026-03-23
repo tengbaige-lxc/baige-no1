@@ -28,6 +28,15 @@ except ImportError:
     LIQMAP_LEARNING_ENABLED = False
     print('[系统] 清算地图学习系统未加载')
 
+# 添加宏观过滤器
+try:
+    from macro_filter import MacroFilter, quick_macro_check
+    MACRO_FILTER_ENABLED = True
+    print('[系统] 宏观过滤器已加载')
+except ImportError:
+    MACRO_FILTER_ENABLED = False
+    print('[系统] 宏观过滤器未加载')
+
 # 导入减仓模块
 from reduce_module import ReduceManager
 
@@ -520,6 +529,7 @@ class Trader:
     def calculate_position_size(self, batch=1):
         """计算下单数量 - 分批建仓 (sz参数单位是张数!)
         batch: 1=第一批(30%), 2=第二批(40%), 3=第三批(30%)
+        根据宏观过滤器动态调整仓位比例
         """
         balance = self.get_balance_usdt()
         
@@ -530,8 +540,21 @@ class Trader:
         batch_ratios = {1: 0.30, 2: 0.40, 3: 0.30}
         ratio = batch_ratios.get(batch, 0.30)
         
-        # 单币种最大25%保证金 × 分批比例 × 20倍杠杆
-        max_margin = balance * POSITION_PERCENT * ratio
+        # 根据宏观过滤器动态调整仓位比例
+        position_pct = POSITION_PERCENT  # 默认20%
+        if MACRO_FILTER_ENABLED:
+            try:
+                from macro_filter import MacroFilter
+                macro_filter = MacroFilter()
+                params = macro_filter.get_trading_params()
+                position_pct = params.get('position_pct', POSITION_PERCENT)
+                if position_pct != POSITION_PERCENT:
+                    print(f'   📊 宏观调整: 仓位比例 {POSITION_PERCENT*100:.0f}% → {position_pct*100:.0f}% ({macro_filter.risk_level})')
+            except:
+                pass
+        
+        # 单币种最大仓位比例 × 分批比例 × 20倍杠杆
+        max_margin = balance * position_pct * ratio
         nominal_position = max_margin * LEVERAGE
         
         # 获取价格
@@ -2751,6 +2774,46 @@ def main():
                 signals_found = []
                 positions_count = 0
                 
+                # ===== 宏观过滤器检查 =====
+                if MACRO_FILTER_ENABLED:
+                    if 'macro_filter' not in locals():
+                        macro_filter = MacroFilter()
+                    
+                    # 获取最新新闻并更新风险等级
+                    try:
+                        import subprocess
+                        news_result = subprocess.run(
+                            ['python3', 'skills/crypto-news-free/scripts/fetch_news.py', '--limit', '5'],
+                            capture_output=True, text=True, timeout=30
+                        )
+                        # 简单解析新闻标题
+                        news_lines = news_result.stdout.split('\n')
+                        news_titles = []
+                        for line in news_lines:
+                            if line.startswith('###') and '[' in line and ']' in line:
+                                title = line.split(']', 1)[-1].strip()
+                                if title:
+                                    news_titles.append({'title': title})
+                        
+                        if news_titles:
+                            macro_filter.update_risk_level(news_titles)
+                    except Exception as e:
+                        pass  # 新闻获取失败不影响交易
+                    
+                    # 检查是否可以交易
+                    can_trade, macro_reason = macro_filter.check_can_open_position(positions_count)
+                    params = macro_filter.get_trading_params()
+                    
+                    if not can_trade:
+                        print(f'\n[{current_time}] 🔒 宏观过滤器阻止交易: {macro_reason}')
+                        print(f'[{current_time}] 持仓:{positions_count} 监控中...', end='', flush=True)
+                        time.sleep(SIGNAL_CHECK_INTERVAL)
+                        continue
+                    
+                    # 显示当前宏观状态
+                    if positions_count == 0:
+                        print(f'\n[{current_time}] 📊 宏观状态: {macro_filter.risk_level} | 最大持仓:{params["max_positions"]} | 仓位:{params["position_pct"]*100:.0f}%')
+                
                 for sym in SYMBOLS:
                     t = Trader(sym)
                     position = t.get_position()
@@ -2809,18 +2872,30 @@ def main():
                         print(f"  🎯 {sig['coin']}: {sig['signal']['reason']}")
                 
                 # 执行开仓（按信号强度排序，优先开强的）
-                if signals_found and positions_count < MAX_POSITIONS:  # 最多同时持有MAX_POSITIONS个品种
-                    # 按权重排序
+                if signals_found:
+                    # 获取宏观过滤器参数
+                    if MACRO_FILTER_ENABLED and 'macro_filter' in locals():
+                        params = macro_filter.get_trading_params()
+                        max_pos = params['max_positions']
+                        signal_threshold = params['signal_threshold']
+                    else:
+                        max_pos = MAX_POSITIONS
+                        signal_threshold = 3
+                    
+                    # 检查信号强度是否达到阈值
                     signals_found.sort(key=lambda x: x['signal'].get('total_weight', 0), reverse=True)
                     best = signals_found[0]
                     
-                    print(f"\n🚀 [{current_time}] 执行开仓: {best['coin']}")
-                    t = Trader(best['symbol'])
-                    success = t.open_long()
-                    if success:
-                        position_monitors[best['symbol']] = time.time()
-                elif signals_found and positions_count >= MAX_POSITIONS:
-                    print(f'\n[{current_time}] ⚠️ 已有{positions_count}个持仓，达到上限{MAX_POSITIONS}，跳过开仓信号')
+                    if best['signal'].get('total_weight', 0) < signal_threshold:
+                        print(f'\n[{current_time}] ⚠️ 最强信号权重{best["signal"].get("total_weight", 0)} < 阈值{signal_threshold}，跳过')
+                    elif positions_count < max_pos:
+                        print(f"\n🚀 [{current_time}] 执行开仓: {best['coin']} (权重:{best['signal'].get('total_weight', 0)})")
+                        t = Trader(best['symbol'])
+                        success = t.open_long()
+                        if success:
+                            position_monitors[best['symbol']] = time.time()
+                    else:
+                        print(f'\n[{current_time}] ⚠️ 已有{positions_count}个持仓，达到上限{max_pos}，跳过开仓信号')
                 
                 # 显示扫描状态
                 print(f'\r[{current_time}] 持仓:{positions_count} 扫描中...', end='', flush=True)
