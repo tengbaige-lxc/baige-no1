@@ -311,10 +311,11 @@ class OKXAPI:
         })
         return self.request('POST', '/api/v5/trade/order', body)
     
-    def close_position(self, pos_side='long'):
+    def close_position(self, symbol=None, pos_side='long'):
         """市价平仓"""
+        inst_id = symbol if symbol else SYMBOL
         body = json.dumps({
-            'instId': SYMBOL,
+            'instId': inst_id,
             'posSide': pos_side,
             'mgnMode': 'cross'
         })
