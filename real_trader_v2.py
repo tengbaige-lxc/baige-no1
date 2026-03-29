@@ -69,9 +69,9 @@ except ImportError as e:
     print(f"⚠️ 摩尔缠论背驰系统未加载: {e}")
 
 # ==================== 配置区 ====================
-API_KEY = '7dae93fe-2a48-4f2b-a889-9dbf30601068'
-SECRET_KEY = '9C73FAEF39647DF6FBD06229CA4F0F4C'
-PASSPHRASE = 'Lxc@2026888'
+API_KEY = os.getenv('OKX_API_KEY', '7dae93fe-2a48-4f2b-a889-9dbf30601068')
+SECRET_KEY = os.getenv('OKX_SECRET_KEY', '9C73FAEF39647DF6FBD06229CA4F0F4C')
+PASSPHRASE = os.getenv('OKX_PASSPHRASE', 'Lxc@2026888')
 BASE_URL = 'https://www.okx.com'
 SYMBOLS = [
     'BTC-USDT-SWAP',
