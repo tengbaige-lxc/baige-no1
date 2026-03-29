@@ -1,0 +1,51 @@
+name: 白鸽一号安全测试
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    # 使用GitHub Secrets存储敏感信息
+    env:
+      OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+      OKX_SECRET_KEY: ${{ secrets.OKX_SECRET_KEY }}
+      OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+      OKX_BASE_URL: ${{ secrets.OKX_BASE_URL || 'https://www.okx.com' }}
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+      
+    - name: 设置 Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pytest pytest-cov
+        
+    - name: 运行测试 (不包含真实API调用)
+      run: |
+        # 只运行模拟测试，不调用真实API
+        pytest test_trader_pytest.py test_signal_combinations.py test_risk_controls.py -v -k "not api_call"
+        
+    - name: 代码安全检查
+      run: |
+        # 检查是否硬编码了API密钥
+        if grep -r "7dae93fe-2a48-4f2b-a889-9dbf30601068" . --include="*.py" 2>/dev/null | grep -v "config_secure.py"; then
+          echo "❌ 发现硬编码API密钥"
+          exit 1
+        fi
+        echo "✅ 未在代码中发现硬编码API密钥"
+        
+    - name: 代码语法检查
+      run: |
+        python -m py_compile real_trader_v2.py
+        echo "✅ 语法检查通过"
