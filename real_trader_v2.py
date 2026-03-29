@@ -90,7 +90,7 @@ DB_PATH = '/root/.openclaw/workspace/trading.db'
 LEVERAGE = 20                # 杠杆倍数
 POSITION_PERCENT = 0.20      # 单币种仓位比例（20%）
 MAX_DAILY_LOSS_PERCENT = 0.06 # 单日最大亏损6%
-MAX_POSITIONS = 5            # 最大同时持仓币种数（用户设定）
+MAX_POSITIONS = 3            # 最大同时持仓币种数（用户设定）
 
 # 移动止损参数 - 趋势策略：让利润奔跑
 ACTIVATION_PERCENT = 0.05    # 激活价+5% (给趋势足够空间)
@@ -2818,7 +2818,12 @@ def main():
                     t = Trader(sym)
                     position = t.get_position()
                     
-                    if position and position['pos'] > 0:
+                    # 正确计算持仓数量（确保pos是数字）
+                    try:
+                        pos_value = float(position.get('pos', 0)) if position else 0
+                    except (ValueError, TypeError):
+                        pos_value = 0
+                    if pos_value > 0.01:  # 大于最小精度才计数
                         # 有持仓，记录但不阻塞
                         positions_count += 1
                         coin = sym.split('-')[0]
@@ -2876,7 +2881,8 @@ def main():
                     # 获取宏观过滤器参数
                     if MACRO_FILTER_ENABLED and 'macro_filter' in locals():
                         params = macro_filter.get_trading_params()
-                        max_pos = params['max_positions']
+                        # 宏观过滤器的max_positions不能超过配置的上限
+                        max_pos = min(MAX_POSITIONS, params['max_positions'])
                         signal_threshold = params['signal_threshold']
                     else:
                         max_pos = MAX_POSITIONS
