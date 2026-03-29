@@ -90,7 +90,7 @@ DB_PATH = '/root/.openclaw/workspace/trading.db'
 LEVERAGE = 20                # 杠杆倍数
 POSITION_PERCENT = 0.20      # 单币种仓位比例（20%）
 MAX_DAILY_LOSS_PERCENT = 0.06 # 单日最大亏损6%
-MAX_POSITIONS = 3            # 最大同时持仓币种数（用户设定）
+MAX_POSITIONS = 4            # 最大同时持仓币种数（用户设定）
 
 # 移动止损参数 - 趋势策略：让利润奔跑
 ACTIVATION_PERCENT = 0.05    # 激活价+5% (给趋势足够空间)
