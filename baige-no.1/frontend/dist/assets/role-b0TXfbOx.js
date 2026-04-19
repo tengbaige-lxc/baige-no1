@@ -1,0 +1,1 @@
+import{s as t}from"./index-C43GdYBA.js";function s(e){return t.get("/roles",{params:e})}function n(e){return t.post("/roles",e)}function u(e,r){return t.put(`/roles/${e}`,r)}function l(e){return t.delete(`/roles/${e}`)}export{n as c,l as d,s as g,u};

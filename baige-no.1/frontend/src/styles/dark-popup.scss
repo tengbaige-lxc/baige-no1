@@ -1,0 +1,159 @@
+/* Dark mode popup overrides - highest specificity */
+html.dark .el-overlay-dialog,
+html.dark .el-overlay {
+  background-color: rgba(0, 0, 0, 0.75) !important;
+}
+
+html.dark .el-message-box {
+  background-color: #1c2128 !important;
+  border: 1px solid #30363d !important;
+  border-radius: 16px !important;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7) !important;
+}
+
+html.dark .el-message-box__header {
+  background-color: #1c2128 !important;
+  border-bottom: 1px solid #30363d !important;
+  padding: 20px 24px !important;
+  border-radius: 16px 16px 0 0 !important;
+}
+
+html.dark .el-message-box__title {
+  color: #e6edf3 !important;
+  font-size: 16px !important;
+  font-weight: 600 !important;
+}
+
+html.dark .el-message-box__headerbtn .el-message-box__close {
+  color: #8b949e !important;
+}
+
+html.dark .el-message-box__headerbtn .el-message-box__close:hover {
+  color: #e6edf3 !important;
+}
+
+html.dark .el-message-box__content {
+  background-color: #1c2128 !important;
+  padding: 24px !important;
+  color: #8b949e !important;
+}
+
+html.dark .el-message-box__status {
+  color: #d29922 !important;
+}
+
+html.dark .el-message-box__message {
+  color: #8b949e !important;
+}
+
+html.dark .el-message-box__btns {
+  background-color: #1c2128 !important;
+  border-top: 1px solid #30363d !important;
+  padding: 16px 24px !important;
+  border-radius: 0 0 16px 16px !important;
+}
+
+html.dark .el-message-box__btns .el-button--default {
+  background-color: #21262d !important;
+  border-color: #30363d !important;
+  color: #e6edf3 !important;
+}
+
+html.dark .el-message-box__btns .el-button--default:hover {
+  background-color: #30363d !important;
+  border-color: #58a6ff !important;
+  color: #58a6ff !important;
+}
+
+html.dark .el-message-box__btns .el-button--primary {
+  background: linear-gradient(135deg, #1f6feb, #58a6ff) !important;
+  border: none !important;
+  color: #fff !important;
+}
+
+/* Message */
+html.dark .el-message {
+  background-color: #1c2128 !important;
+  border: 1px solid #30363d !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  border-radius: 12px !important;
+}
+
+html.dark .el-message__content {
+  color: #e6edf3 !important;
+}
+
+/* Notification */
+html.dark .el-notification {
+  background-color: #1c2128 !important;
+  border: 1px solid #30363d !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  border-radius: 12px !important;
+}
+
+html.dark .el-notification__title {
+  color: #e6edf3 !important;
+}
+
+html.dark .el-notification__content {
+  color: #8b949e !important;
+}
+
+/* Dropdown */
+html.dark .el-dropdown__popper {
+  background-color: #1c2128 !important;
+  border: 1px solid #30363d !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  border-radius: 12px !important;
+}
+
+html.dark .el-dropdown-menu {
+  background-color: transparent !important;
+}
+
+html.dark .el-dropdown-menu__item {
+  color: #8b949e !important;
+}
+
+html.dark .el-dropdown-menu__item:hover {
+  background-color: #21262d !important;
+  color: #e6edf3 !important;
+}
+
+/* Select dropdown */
+html.dark .el-select-dropdown {
+  background-color: #1c2128 !important;
+  border: 1px solid #30363d !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  border-radius: 12px !important;
+}
+
+html.dark .el-select-dropdown__item {
+  color: #8b949e !important;
+}
+
+html.dark .el-select-dropdown__item.hover,
+html.dark .el-select-dropdown__item:hover {
+  background-color: #21262d !important;
+  color: #e6edf3 !important;
+}
+
+html.dark .el-select-dropdown__item.selected {
+  color: #58a6ff !important;
+  background-color: rgba(88, 166, 255, 0.1) !important;
+}
+
+/* Popper / Tooltip */
+html.dark .el-popper {
+  background-color: #1c2128 !important;
+  border: 1px solid #30363d !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+  border-radius: 12px !important;
+  color: #e6edf3 !important;
+}
+
+html.dark .el-popper.is-dark {
+  background-color: #1c2128 !important;
+  border-color: #30363d !important;
+  color: #e6edf3 !important;
+}

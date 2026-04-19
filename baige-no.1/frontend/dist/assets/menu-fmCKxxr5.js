@@ -1,0 +1,1 @@
+import{s as n}from"./index-C43GdYBA.js";function r(){return n.get("/menus")}function s(e){return n.post("/menus",e)}function o(e,t){return n.put(`/menus/${e}`,t)}function a(e){return n.delete(`/menus/${e}`)}export{s as c,a as d,r as g,o as u};

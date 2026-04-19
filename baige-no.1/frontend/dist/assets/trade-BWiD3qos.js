@@ -1,0 +1,1 @@
+import{s as e}from"./index-C43GdYBA.js";function d(r){return e.post("/trade/order",r)}function n(r){return e.delete(`/trade/order/${r}`)}function o(r){return e.get("/trade/orders",{params:r})}export{n as c,o as g,d as p};

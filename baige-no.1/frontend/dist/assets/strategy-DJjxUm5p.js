@@ -1,0 +1,1 @@
+import{s as e}from"./index-C43GdYBA.js";function g(t){return e.get("/strategy",{params:t})}function s(t){return e.post("/strategy",t)}function n(t,r){return e.put(`/strategy/${t}`,r)}function u(t){return e.delete(`/strategy/${t}`)}function o(t,r){return e.get(`/strategy/${t}/logs`,{params:r})}export{o as a,s as c,u as d,g,n as u};

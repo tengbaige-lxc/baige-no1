@@ -1,0 +1,1 @@
+import{s}from"./index-C43GdYBA.js";function a(e){return s.get("/messages",{params:e})}function r(){return s.get("/messages/unread-count")}function n(e){return s.post("/messages",e)}function u(e){return s.put(`/messages/${e}/read`)}export{a,n as c,r as g,u as m};
