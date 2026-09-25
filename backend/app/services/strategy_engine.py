@@ -5,7 +5,6 @@ import logging
 import statistics
 import sys
 import time
-from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, text
@@ -26,6 +25,28 @@ from app.services.okx_client import (
 from app.services.contract_specs import get_static_ct_val
 from app.services.monitor_service import monitor_service
 from app.services.trade_service import trade_service
+from app.services.exit_policy import (
+    TrailingPositionState,
+    cap_trend_runner_reduce_quantity,
+    evaluate_extreme_volume_followthrough,
+    filter_confirmed_klines,
+    is_confirmed_third_sell_exit,
+    is_tighter_profit_floor,
+    resolve_profit_lock_price,
+    resolve_runner_add_stop_price,
+    resolve_trailing_callback,
+    resolve_trailing_profit_lock_ratio,
+    resolve_trendline_break_signal,
+)
+from app.services.position_sizing import (
+    classify_transition_replacement,
+    is_replaceable_transition_tail,
+    resolve_directional_ma_extension,
+    resolve_global_entry_allocation,
+    rotation_score_gap,
+    rotation_weak_closed_bars,
+    transition_slot_allows,
+)
 from app.services.trading_execution import (
     NativeStopRequest,
     OpenPositionRequest,
@@ -59,139 +80,6 @@ except Exception:
     ElliottWaveSignalEngine = None
 
 
-def filter_confirmed_klines(klines: list) -> list:
-    """Exclude an exchange's still-forming candle from exit decisions."""
-    return [
-        row for row in (klines or [])
-        if len(row) <= 8 or str(row[8]) == "1"
-    ]
-
-
-def is_confirmed_third_sell_exit(
-    base_state: dict | None,
-    confirm_state: dict | None,
-) -> bool:
-    """Require third-sell structure on both the timing and confirmation bars."""
-    return bool(
-        base_state
-        and base_state.get("third_sell")
-        and confirm_state
-        and confirm_state.get("third_sell")
-    )
-
-
-def resolve_global_entry_allocation(
-    open_symbol_count: int,
-    allocation_steps: list | tuple | None,
-) -> float | None:
-    """Return the share of currently available margin for the next global entry."""
-    if not isinstance(open_symbol_count, int) or open_symbol_count < 0:
-        return None
-    if not isinstance(allocation_steps, (list, tuple)):
-        return None
-    try:
-        steps = [max(0.01, min(1.0, float(step))) for step in allocation_steps]
-    except (TypeError, ValueError):
-        return None
-    if open_symbol_count >= len(steps):
-        return None
-    return steps[open_symbol_count]
-
-
-def transition_slot_allows(
-    open_symbol_count: int,
-    primary_symbol_limit: int,
-    entry_score: float,
-    minimum_score: float,
-) -> bool:
-    """Allow the buffer slot only for a materially stronger ranked candidate."""
-    try:
-        count = int(open_symbol_count)
-        primary_limit = int(primary_symbol_limit)
-        score = float(entry_score)
-        threshold = float(minimum_score)
-    except (TypeError, ValueError):
-        return False
-    return count < primary_limit or score >= threshold
-
-
-def is_replaceable_transition_tail(
-    current_quantity: float,
-    protected_core_quantity: float,
-    core_ratio: float,
-    unrealized_pnl: float,
-    maximum_remaining_ratio: float = 0.20,
-) -> bool:
-    """A profitable residual can rotate out; a core or losing position cannot."""
-    try:
-        current = abs(float(current_quantity))
-        core = abs(float(protected_core_quantity))
-        ratio = float(core_ratio)
-        pnl = float(unrealized_pnl)
-        maximum = float(maximum_remaining_ratio)
-    except (TypeError, ValueError):
-        return False
-    if current <= 0 or core <= 0 or ratio <= 0 or pnl < 0:
-        return False
-    original_quantity = core / ratio
-    return current / original_quantity <= max(0.0, min(1.0, maximum))
-
-
-def classify_transition_replacement(
-    unrealized_pnl: float,
-    is_profitable_tail: bool,
-    regime: str,
-    strong_regime: str,
-) -> str | None:
-    """Prefer a weak losing position, then a weak profitable residual."""
-    if str(regime or "").lower() in {"", "unknown", str(strong_regime or "").lower()}:
-        return None
-    try:
-        pnl = float(unrealized_pnl)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(pnl):
-        return None
-    if pnl < 0:
-        return "losing"
-    if is_profitable_tail:
-        return "profitable_tail"
-    return None
-
-
-def rotation_score_gap(new_score, old_score, minimum=7.0, gap=1.5):
-    try:
-        values = [float(v) for v in (new_score, old_score, minimum, gap)]
-    except (TypeError, ValueError):
-        return False
-    return all(math.isfinite(v) for v in values) and values[0] >= values[2] and values[0] - values[1] >= values[3]
-
-
-def rotation_weak_closed_bars(rows, direction, now_ms):
-    """Require two consecutive closed bars below/above MA34 with adverse MA5 slope."""
-    if direction not in {"LONG", "SHORT"}:
-        return False
-    try:
-        candles = sorted({int(r[0]): r for r in rows if len(r) >= 9 and str(r[8]) == "1" and int(r[0]) + 300000 <= now_ms}.values(), key=lambda r: int(r[0]))
-        if len(candles) < 35 or now_ms - (int(candles[-1][0]) + 300000) > 360000:
-            return False
-        if int(candles[-1][0]) - int(candles[-2][0]) != 300000:
-            return False
-        closes = [float(r[4]) for r in candles]
-        if not all(math.isfinite(v) and v > 0 for v in closes):
-            return False
-        for end in (len(closes)-1, len(closes)):
-            last = closes[end-1]
-            ma34 = sum(closes[end-34:end]) / 34
-            ma5 = sum(closes[end-5:end]) / 5
-            previous = sum(closes[end-6:end-1]) / 5
-            if not ((last < ma34 and ma5 < previous) if direction == "LONG" else (last > ma34 and ma5 > previous)):
-                return False
-        return True
-    except (TypeError, ValueError, IndexError):
-        return False
-
-
 def resolve_trend_v3_5m_trigger(
     directional_move: bool,
     structure_trigger: bool,
@@ -210,24 +98,6 @@ def resolve_trend_v3_5m_trigger(
     if require_volume_speed:
         return volume_speed_trigger, volume_speed_trigger
     return bool(directional_move and (structure_trigger or volume_speed_trigger)), volume_speed_trigger
-
-
-def resolve_directional_ma_extension(
-    current_price: float,
-    ma34: float,
-    direction: str,
-) -> float:
-    """Return how far price has already extended past MA34 in entry direction."""
-    try:
-        price = float(current_price)
-        average = float(ma34)
-    except (TypeError, ValueError):
-        return 0.0
-    if price <= 0 or average <= 0:
-        return 0.0
-    if str(direction).upper() == "LONG":
-        return max(0.0, price / average - 1.0)
-    return max(0.0, average / price - 1.0)
 
 
 def resolve_tradfi_macro_event_bonus(
@@ -265,210 +135,6 @@ def resolve_tradfi_macro_event_bonus(
         "detail": f"confirmed_macro_event={context.get('event_id', 'event')} direction={expected_direction}",
         "raw": context,
     }
-
-
-def resolve_trailing_callback(peak_metric: float, trailing_config: dict) -> float:
-    """Select the callback that applies to the current high-water mark."""
-    fallback = float(trailing_config.get("callback", trailing_config.get("callback_pct", 0.30)))
-    selected = fallback
-    tiers = trailing_config.get("callback_tiers", [])
-    if not isinstance(tiers, list):
-        return selected
-    for tier in tiers:
-        if not isinstance(tier, dict):
-            continue
-        try:
-            threshold = float(tier.get("min_peak", tier.get("activation", 0)))
-            callback = float(tier["callback"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if peak_metric >= threshold:
-            selected = callback
-    return max(0.0, min(1.0, selected))
-
-
-def resolve_trailing_profit_lock_ratio(peak_metric: float, trailing_config: dict) -> float:
-    """Return the share of the whole-trade peak PnL to protect after a trim.
-
-    This deliberately works on total PnL (realized partial exits plus the
-    remaining position's unrealized PnL), rather than on the residual
-    position's ROE.  That prevents a profitable partial exit from making the
-    remaining position look like a fresh trade after a service restart.
-    """
-    fallback = float(trailing_config.get("profit_lock_ratio", 0.30))
-    selected = fallback
-    tiers = trailing_config.get("profit_lock_tiers") or [
-        {"min_peak": 0.40, "lock_ratio": 0.30},
-        {"min_peak": 0.80, "lock_ratio": 0.40},
-        {"min_peak": 1.50, "lock_ratio": 0.50},
-    ]
-    if not isinstance(tiers, list):
-        return max(0.0, min(1.0, selected))
-    for tier in tiers:
-        if not isinstance(tier, dict):
-            continue
-        try:
-            threshold = float(tier.get("min_peak", tier.get("activation", 0)))
-            lock_ratio = float(tier["lock_ratio"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if peak_metric >= threshold:
-            selected = lock_ratio
-    return max(0.0, min(1.0, selected))
-
-
-def resolve_profit_lock_price(
-    direction: str,
-    entry_price: float,
-    remaining_quantity: float,
-    contract_value: float,
-    realized_pnl: float,
-    peak_total_pnl: float,
-    lock_ratio: float,
-) -> float | None:
-    """Translate a whole-trade profit floor into a price for the residual leg."""
-    try:
-        entry = float(entry_price)
-        quantity = float(remaining_quantity)
-        ct_val = float(contract_value)
-        realized = float(realized_pnl)
-        peak = float(peak_total_pnl)
-        ratio = float(lock_ratio)
-    except (TypeError, ValueError):
-        return None
-    if entry <= 0 or quantity <= 0 or ct_val <= 0 or peak <= 0:
-        return None
-
-    target_remaining_pnl = peak * max(0.0, min(1.0, ratio)) - realized
-    price_delta = target_remaining_pnl / (quantity * ct_val)
-    price = entry + price_delta if str(direction).upper() == "LONG" else entry - price_delta
-    return price if price > 0 else None
-
-
-def is_tighter_profit_floor(direction: str, proposed_price: float, current_price: float) -> bool:
-    """A long floor only rises; a short floor only falls."""
-    if proposed_price <= 0:
-        return False
-    if current_price <= 0:
-        return True
-    if str(direction).upper() == "LONG":
-        return proposed_price > current_price
-    return proposed_price < current_price
-
-
-def cap_trend_runner_reduce_quantity(
-    position_quantity: float,
-    requested_quantity: float,
-    core_quantity: float,
-) -> float:
-    """Only trim the runner; the protected core is never sold by a profit exit."""
-    try:
-        position = abs(float(position_quantity))
-        requested = max(0.0, float(requested_quantity))
-        core = max(0.0, float(core_quantity))
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(requested, max(0.0, position - core)))
-
-
-def resolve_runner_add_stop_price(direction: str, entry_price: float, stop_pct: float) -> float:
-    """Return the dedicated adverse-price stop for a continuation add-on."""
-    entry = max(0.0, float(entry_price))
-    distance = max(0.0, min(0.10, float(stop_pct)))
-    if entry <= 0 or distance <= 0:
-        return 0.0
-    return entry * (1 - distance) if str(direction).upper() == "LONG" else entry * (1 + distance)
-
-
-def evaluate_extreme_volume_followthrough(
-    direction: str,
-    entry_price: float,
-    candle_open: float,
-    candle_high: float,
-    candle_low: float,
-    candle_close: float,
-    failure_tolerance: float = 0.003,
-    max_rejection_wick_ratio: float = 0.45,
-) -> str:
-    """Classify the first closed 5m candle after an extreme-volume entry."""
-    try:
-        entry = float(entry_price)
-        opened = float(candle_open)
-        high = float(candle_high)
-        low = float(candle_low)
-        closed = float(candle_close)
-    except (TypeError, ValueError):
-        return "neutral"
-    if min(entry, opened, high, low, closed) <= 0 or high <= low:
-        return "neutral"
-    tolerance = max(0.0, min(0.02, float(failure_tolerance)))
-    wick_limit = max(0.0, min(1.0, float(max_rejection_wick_ratio)))
-    candle_range = high - low
-    side = str(direction).upper()
-    if side == "LONG":
-        rejection_wick = (high - max(opened, closed)) / candle_range
-        if closed < entry * (1 - tolerance) or (
-            closed < opened and closed < entry and rejection_wick >= wick_limit
-        ):
-            return "failed"
-        if closed >= entry and closed >= opened and rejection_wick < wick_limit:
-            return "confirmed"
-    elif side == "SHORT":
-        rejection_wick = (min(opened, closed) - low) / candle_range
-        if closed > entry * (1 + tolerance) or (
-            closed > opened and closed > entry and rejection_wick >= wick_limit
-        ):
-            return "failed"
-        if closed <= entry and closed <= opened and rejection_wick < wick_limit:
-            return "confirmed"
-    return "neutral"
-
-
-@dataclass
-class TrailingPositionState:
-    peak_metric: float = 0.0
-    exit_taken: bool = False
-    peak_total_pnl: float = 0.0
-    last_exit_peak_metric: float = 0.0
-    profit_floor_price: float = 0.0
-    profit_floor_taken: bool = False
-    profit_floor_peak_total_pnl: float = 0.0
-    core_quantity: float = 0.0
-    runner_add_quantity: float = 0.0
-    runner_add_entry_price: float = 0.0
-    runner_add_stop_price: float = 0.0
-    runner_add_break_even_armed: bool = False
-    runner_add_used: bool = False
-    extreme_volume_ratio: float = 0.0
-    extreme_event_candle_ts: str = ""
-    extreme_event_status: str = ""
-
-
-def resolve_trendline_break_signal(
-    candles: list,
-    is_long: bool,
-    break_pct: float,
-    mark_price: float,
-    require_closed_candle: bool = False,
-) -> bool:
-    """Evaluate a structural break, optionally only from the last closed candle."""
-    if len(candles) < 10:
-        return False
-
-    evaluation_price = mark_price
-    history = candles[-10:-1]
-    if require_closed_candle:
-        closed = [row for row in candles if len(row) > 8 and str(row[8]) == "1"]
-        if len(closed) < 10:
-            return False
-        evaluation_price = float(closed[-1][4])
-        history = closed[-10:-1]
-
-    if is_long:
-        recent_low = min(float(row[3]) for row in history)
-        return evaluation_price < recent_low * (1 - break_pct)
-    recent_high = max(float(row[2]) for row in history)
-    return evaluation_price > recent_high * (1 + break_pct)
 
 
 def oil_fundamental_confidence_is_sufficient(
