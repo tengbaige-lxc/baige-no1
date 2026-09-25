@@ -26,6 +26,12 @@ from app.services.okx_client import (
 from app.services.contract_specs import get_static_ct_val
 from app.services.monitor_service import monitor_service
 from app.services.trade_service import trade_service
+from app.services.trading_execution import (
+    NativeStopRequest,
+    OpenPositionRequest,
+    ReducePositionRequest,
+    TradingExecutionGateway,
+)
 from app.services.feishu_notify import feishu_openclaw_notifier
 from app.services.chanlun_bridge import calc_macd, summarize_chanlun_factors, detect_black_candle
 from app.services.liq_updater import LiqDataUpdater
@@ -668,6 +674,10 @@ class StrategyEngine:
         self._last_trade_quantity = None
         self._last_trade_error = None
         self._order_guard_lock = asyncio.Lock()
+        self._execution_gateway = TradingExecutionGateway(
+            trade_service,
+            self._refresh_native_stop_after_reduce,
+        )
         self._live_instrument_ids = set()
         self._live_instrument_ids_by_type: dict[str, set[str]] = {}
         self._instrument_cache_ts = 0
@@ -2778,23 +2788,26 @@ class StrategyEngine:
         exit_stage_key: str = None,
     ):
         """???????????"""
-        from app.schemas.trading import OrderCreate
         quantity = max(round(quantity, 2), 0.01)
+        position_direction = "LONG" if side == "SELL" else "SHORT"
         try:
-            order_data = OrderCreate(
+            request = ReducePositionRequest(
                 symbol=symbol,
-                side=side,
-                order_type="MARKET",
+                direction=position_direction,
                 quantity=quantity,
                 market_type=strategy.market_type,
                 margin_mode=(params or {}).get("margin_mode", "cross") or "cross",
                 leverage=int(params.get("leverage", 20) or 20),
-                reduce_only=True,
                 pos_side=pos_side,
                 remark=f"????: {reason}",
             )
             async with AsyncSessionLocal() as new_db:
-                db_order = await trade_service.place_order(new_db, strategy.user_id, config, order_data)
+                db_order = await self._execution_gateway.reduce_position(
+                    new_db,
+                    strategy.user_id,
+                    config,
+                    request,
+                )
                 log_details = {"exit_reason": reason, "reduce_qty": quantity}
                 if exit_stage_key:
                     log_details["exit_stage_key"] = exit_stage_key
@@ -2813,7 +2826,7 @@ class StrategyEngine:
                 # ?? TradeRecord?? FIFO ??????????????????
                 try:
                     from app.services.trade_record_ledger import apply_reduce_to_trade_records
-                    close_direction = "LONG" if side == "SELL" else "SHORT"  # SELL?? = ???BUY?? = ??
+                    close_direction = position_direction  # SELL?? = ???BUY?? = ??
                     exit_price = getattr(db_order, "executed_price", None) or price
                     ledger_result = await apply_reduce_to_trade_records(
                         new_db,
@@ -2842,8 +2855,9 @@ class StrategyEngine:
 
                 await new_db.commit()
             # 兜底止损同步：撤旧，剩余仓位>0 则按剩余数量重挂；内部吞错不影响减仓结果
-            remaining_size = await self._refresh_native_stop_after_reduce(
-                config, symbol, side, params
+            remaining_size = await self._execution_gateway.refresh_native_stop(
+                config,
+                NativeStopRequest(symbol, position_direction, params),
             )
             post_reduce_callback = getattr(self, "_post_reduce_callback", None)
             if post_reduce_callback is not None:
@@ -8641,14 +8655,12 @@ class StrategyEngine:
                             f"> ????{max_margin:.2f}{margin_ccy}"
                         )
 
-                from app.schemas.trading import OrderCreate
                 allow_min_size_bump = params.get("allow_min_size_bump", False)
                 if isinstance(allow_min_size_bump, str):
                     allow_min_size_bump = allow_min_size_bump.strip().lower() in {"1", "true", "yes", "on"}
-                order_data = OrderCreate(
+                request = OpenPositionRequest(
                     symbol=trade_symbol,
-                    side=signal,
-                    order_type="MARKET",
+                    direction=trade_direction,
                     quantity=quantity,
                     market_type=strategy_market_type,
                     margin_mode=params.get("margin_mode", "cross") or "cross",
@@ -8656,7 +8668,12 @@ class StrategyEngine:
                     remark=f"??????: {strategy_marker} ({strategy.strategy_type})",
                     allow_min_size_bump=bool(allow_min_size_bump),
                 )
-                db_order = await trade_service.place_order(db, strategy_user_id, config, order_data)
+                db_order = await self._execution_gateway.open_position(
+                    db,
+                    strategy_user_id,
+                    config,
+                    request,
+                )
                 executed_price = getattr(db_order, "executed_price", None) or price
                 executed_qty = getattr(db_order, "executed_qty", None) or getattr(db_order, "quantity", quantity)
                 external_order_id = getattr(db_order, "binance_order_id", None)
@@ -8724,10 +8741,9 @@ class StrategyEngine:
                     print(f"Feishu open trade notify unexpected error: {notify_error}")
                 # 交易所侧兜底止损必须覆盖交易所真实总仓位。
                 # 同币加仓时仅以本次 executed_qty 重挂会留下旧仓裸露。
-                await self._refresh_native_stop_after_reduce(
-                    config, trade_symbol,
-                    "SELL" if trade_direction == "LONG" else "BUY",
-                    params,
+                await self._execution_gateway.refresh_native_stop(
+                    config,
+                    NativeStopRequest(trade_symbol, trade_direction, params),
                 )
                 strategy.total_trades = int(strategy.total_trades or 0) + 1
                 self._last_trade_quantity = getattr(db_order, "quantity", quantity)
