@@ -181,8 +181,13 @@ def select_legs(selected_by_pool: dict, live: set[tuple[str, str]],
     return chosen
 
 
-def cross_sectional_selected_by_pool(plans: dict, minimum_score: float) -> dict:
-    """Validate executable neutral targets and adapt them to the live executor."""
+def cross_sectional_selected_by_pool(
+    plans: dict,
+    minimum_score: float,
+    *,
+    require_factor_gate: bool = False,
+) -> dict:
+    """Validate cross-sectional targets and adapt them to the live executor."""
     selected_by_pool = {}
     for pool, plan in (plans or {}).items():
         selected = {"LONG": [], "SHORT": []}
@@ -194,8 +199,13 @@ def cross_sectional_selected_by_pool(plans: dict, minimum_score: float) -> dict:
                           if leg.get("direction") == "LONG")
         short_weight = sum(float(leg.get("notional_weight") or 0) for leg in legs
                            if leg.get("direction") == "SHORT")
-        if long_weight <= 0 or short_weight <= 0 or not math.isclose(
-                long_weight, short_weight, rel_tol=1e-6, abs_tol=1e-9):
+        if require_factor_gate:
+            if long_weight <= 0 and short_weight <= 0:
+                selected_by_pool[pool] = selected
+                continue
+        elif long_weight <= 0 or short_weight <= 0 or not math.isclose(
+            long_weight, short_weight, rel_tol=1e-6, abs_tol=1e-9
+        ):
             selected_by_pool[pool] = selected
             continue
         for leg in legs:
@@ -204,14 +214,23 @@ def cross_sectional_selected_by_pool(plans: dict, minimum_score: float) -> dict:
             weight = float(leg.get("notional_weight") or 0)
             if direction not in selected or not symbol or weight <= 0:
                 continue
+            if require_factor_gate and not bool(leg.get("factor_gate_passed")):
+                continue
             pair_spread = max(0.0, float(leg.get("pair_spread") or 0))
+            directional_score = leg.get("directional_score")
+            if require_factor_gate:
+                score = float(directional_score or 0)
+            else:
+                score = max(
+                    float(minimum_score),
+                    float(minimum_score) + min(2.0, pair_spread / 2.0),
+                )
             selected[direction].append({
                 **leg,
                 "symbol": symbol,
                 "pool": pool,
                 "direction": direction,
-                "score": max(float(minimum_score), float(minimum_score) +
-                             min(2.0, pair_spread / 2.0)),
+                "score": score,
                 "quality": pair_spread,
                 "risk_direction": economic_direction_for_symbol(symbol, direction),
                 "risk_factor": leg.get("risk_factor") or risk_factor_for_symbol(
@@ -982,11 +1001,18 @@ class V5ExecutionManager:
                 self._exit_reentry_blocked_keys(account.id)
             self._save_state()
         selected = cross_sectional_selected_by_pool(
-            plans, float(self.config.get("minimum_score", 6.5)))
+            plans,
+            float(self.config.get("minimum_score", 6.5)),
+            require_factor_gate=bool(
+                (self.config.get("cross_sectional_shadow") or {}).get(
+                    "factor_entry_gate_enabled"
+                )
+            ),
+        )
         if not any(rows.get(side) for rows in selected.values()
                    for side in ("LONG", "SHORT")):
             return {"status": "WAIT", "mode": "cross_sectional_live",
-                    "reason": "no_valid_executable_neutral_target"}
+                    "reason": "no_valid_executable_factor_target"}
         result = await self.process_scan(completed, selected)
         return {**result, "mode": "cross_sectional_live"}
 

@@ -1,9 +1,10 @@
 """Cross-sectional long-short target construction for the V5 shadow book.
 
-This module has no account access and cannot place orders.  It converts the
-existing per-symbol directional research observations into a daily, liquidity
-bounded and factor-neutral target book that can be measured before it is ever
-allowed to influence live execution.
+This module has no account access and cannot place orders. It converts the
+existing per-symbol directional research observations into a scheduled,
+liquidity-bounded target book. Legacy mode is factor neutral; the live factor
+gate admits independently qualified early-trend legs and leaves cash when the
+opposite side has no valid candidate.
 """
 
 from __future__ import annotations
@@ -105,8 +106,19 @@ def _paired_rows(observations, pool):
             "market": market,
             "price": price,
             "scores": {},
+            "signals": {},
         })
         item["scores"][direction] = score
+        item["signals"][direction] = {
+            "score": score,
+            "eligible": bool(observation.get("eligible")),
+            "trend_4h_aligned": bool(observation.get("trend_4h_aligned")),
+            "structure_30m_aligned": bool(
+                observation.get("structure_30m_aligned")
+            ),
+            "adx_4h_strong": bool(observation.get("adx_4h_strong")),
+            "adx_4h": _finite(observation.get("adx_4h"), 0.0),
+        }
     complete = []
     for row in rows.values():
         market = row["market"]
@@ -181,17 +193,54 @@ def _correlation_ok(candidate, selected, maximum):
     return True
 
 
-def _select_factor_pairs(rows, max_per_side, minimum_spread, maximum_correlation):
+def _directional_entry_allowed(row, direction, config):
+    if not bool(config.get("factor_entry_gate_enabled")):
+        return True
+    signal = (row.get("signals") or {}).get(direction) or {}
+    score = _finite(signal.get("score"), 0.0)
+    minimum = float(config.get("directional_entry_score_min", 3.0))
+    maximum = float(config.get("directional_entry_score_max", 4.0))
+    sign = 1.0 if direction == "LONG" else -1.0
+    edge = sign * float(row.get("score_spread") or 0)
+    if not minimum <= score <= maximum:
+        return False
+    if edge < float(config.get("minimum_directional_score_edge", 2.0)):
+        return False
+    if bool(config.get("require_trend_4h_aligned", True)) and not signal.get(
+        "trend_4h_aligned"
+    ):
+        return False
+    if bool(config.get("require_structure_or_adx", True)) and not (
+        signal.get("structure_30m_aligned") or signal.get("adx_4h_strong")
+    ):
+        return False
+    return True
+
+
+def _select_factor_pairs(
+    rows,
+    max_per_side,
+    minimum_spread,
+    maximum_correlation,
+    config,
+):
     grouped = defaultdict(list)
     for row in rows:
         grouped[row["risk_factor"]].append(row)
     opportunities = []
     for factor, values in grouped.items():
-        ordered = sorted(values, key=lambda row: (-row["alpha"], row["symbol"]))
-        pair_count = min(len(ordered) // 2, max_per_side)
+        longs = sorted(
+            [row for row in values if _directional_entry_allowed(row, "LONG", config)],
+            key=lambda row: (-row["alpha"], row["symbol"]),
+        )
+        shorts = sorted(
+            [row for row in values if _directional_entry_allowed(row, "SHORT", config)],
+            key=lambda row: (row["alpha"], row["symbol"]),
+        )
+        pair_count = min(len(longs), len(shorts), max_per_side)
         for offset in range(pair_count):
-            long = ordered[offset]
-            short = ordered[-(offset + 1)]
+            long = longs[offset]
+            short = shorts[offset]
             spread = long["alpha"] - short["alpha"]
             if long["symbol"] == short["symbol"] or spread < minimum_spread:
                 continue
@@ -215,6 +264,43 @@ def _select_factor_pairs(rows, max_per_side, minimum_spread, maximum_correlation
     return selected
 
 
+def _select_directional_legs(
+    rows,
+    max_per_side,
+    minimum_alpha,
+    maximum_correlation,
+    config,
+):
+    selected = {"LONG": [], "SHORT": []}
+    used = set()
+    for direction in ("LONG", "SHORT"):
+        sign = 1.0 if direction == "LONG" else -1.0
+        candidates = [
+            row for row in rows
+            if _directional_entry_allowed(row, direction, config)
+            and sign * float(row.get("alpha") or 0) >= minimum_alpha
+        ]
+        candidates.sort(
+            key=lambda row: (-sign * float(row.get("alpha") or 0), row["symbol"])
+        )
+        for row in candidates:
+            if len(selected[direction]) >= max_per_side:
+                break
+            if row["symbol"] in used:
+                continue
+            if not _correlation_ok(
+                row, selected[direction], maximum_correlation
+            ):
+                continue
+            selected[direction].append({
+                **row,
+                "pair_spread": sign * float(row.get("alpha") or 0),
+                "direction": direction,
+            })
+            used.add(row["symbol"])
+    return selected
+
+
 def _neutral_weights(selected):
     by_factor = defaultdict(lambda: {"LONG": [], "SHORT": []})
     for side, rows in selected.items():
@@ -232,6 +318,8 @@ def _neutral_weights(selected):
             inverses = [1.0 / row["volatility"] for row in rows]
             denominator = sum(inverses)
             for row, inverse in zip(rows, inverses):
+                signal = (row.get("signals") or {}).get(side) or {}
+                sign = 1.0 if side == "LONG" else -1.0
                 legs.append({
                     "symbol": row["symbol"],
                     "pool": row["pool"],
@@ -245,7 +333,66 @@ def _neutral_weights(selected):
                     "volatility_30m": row["volatility"],
                     "price": row["price"],
                     "notional_weight": factor_gross * 0.5 * inverse / denominator,
+                    "directional_score": float(signal.get("score") or 0),
+                    "opposite_score": float(
+                        row["scores"]["SHORT" if side == "LONG" else "LONG"]
+                    ),
+                    "directional_score_edge": sign * row["score_spread"],
+                    "trend_4h_aligned": bool(signal.get("trend_4h_aligned")),
+                    "structure_30m_aligned": bool(
+                        signal.get("structure_30m_aligned")
+                    ),
+                    "adx_4h_strong": bool(signal.get("adx_4h_strong")),
+                    "adx_4h": float(signal.get("adx_4h") or 0),
+                    "factor_gate_passed": True,
                 })
+    return legs
+
+
+def _directional_weights(selected, config):
+    active_sides = [side for side in ("LONG", "SHORT") if selected[side]]
+    if not active_sides:
+        return []
+    if len(active_sides) == 1:
+        side_gross = {
+            active_sides[0]: float(config.get("single_side_target_weight", 0.30))
+        }
+    else:
+        side_gross = {"LONG": 0.5, "SHORT": 0.5}
+    legs = []
+    for side in active_sides:
+        rows = selected[side]
+        inverses = [1.0 / row["volatility"] for row in rows]
+        denominator = sum(inverses)
+        for row, inverse in zip(rows, inverses):
+            signal = (row.get("signals") or {}).get(side) or {}
+            sign = 1.0 if side == "LONG" else -1.0
+            legs.append({
+                "symbol": row["symbol"],
+                "pool": row["pool"],
+                "direction": side,
+                "risk_factor": row["risk_factor"],
+                "alpha": row["alpha"],
+                "score_spread": row["score_spread"],
+                "normalized_momentum": row["normalized_momentum"],
+                "pair_spread": row["pair_spread"],
+                "liquidity_trailing": row["liquidity"],
+                "volatility_30m": row["volatility"],
+                "price": row["price"],
+                "notional_weight": side_gross[side] * inverse / denominator,
+                "directional_score": float(signal.get("score") or 0),
+                "opposite_score": float(
+                    row["scores"]["SHORT" if side == "LONG" else "LONG"]
+                ),
+                "directional_score_edge": sign * row["score_spread"],
+                "trend_4h_aligned": bool(signal.get("trend_4h_aligned")),
+                "structure_30m_aligned": bool(
+                    signal.get("structure_30m_aligned")
+                ),
+                "adx_4h_strong": bool(signal.get("adx_4h_strong")),
+                "adx_4h": float(signal.get("adx_4h") or 0),
+                "factor_gate_passed": True,
+            })
     return legs
 
 
@@ -270,13 +417,27 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
         [row for row in paired if row["symbol"] in allowed],
         config.get("momentum_weight", 0.5),
     ) if allowed else []
-    selected = _select_factor_pairs(
-        ranked,
-        max(1, int(config.get("max_legs_per_side", 4))),
-        float(config.get("minimum_alpha_spread", 1.0)),
-        float(config.get("max_same_side_correlation", 0.85)),
-    )
-    proposed_legs = _neutral_weights(selected)
+    max_per_side = max(1, int(config.get("max_legs_per_side", 4)))
+    minimum_alpha = float(config.get("minimum_alpha_spread", 1.0))
+    maximum_correlation = float(config.get("max_same_side_correlation", 0.85))
+    if config.get("factor_entry_gate_enabled"):
+        selected = _select_directional_legs(
+            ranked,
+            max_per_side,
+            minimum_alpha,
+            maximum_correlation,
+            config,
+        )
+        proposed_legs = _directional_weights(selected, config)
+    else:
+        selected = _select_factor_pairs(
+            ranked,
+            max_per_side,
+            minimum_alpha,
+            maximum_correlation,
+            config,
+        )
+        proposed_legs = _neutral_weights(selected)
     slot, slot_day, slot_hour, rebalance_hours = _rebalance_slot(
         now_ms, pool, config)
     stored_legs = [dict(leg) for leg in (
@@ -344,5 +505,10 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
         "estimated_cost_fraction": turnover * cost_bps / 10000,
         "state": next_state,
         "executable": execution_enabled and bool(legs),
-        "methodology": "monthly_liquidity_universe_daily_factor_neutral_inverse_volatility",
+        "methodology": (
+            "monthly_liquidity_universe_daily_factor_neutral_inverse_volatility_"
+            "directional_entry_gate"
+            if config.get("factor_entry_gate_enabled")
+            else "monthly_liquidity_universe_daily_factor_neutral_inverse_volatility"
+        ),
     }

@@ -63,6 +63,55 @@ def test_cross_sectional_live_adapter_accepts_only_neutral_executable_targets():
     assert selected["tradfi"] == {"LONG": [], "SHORT": []}
 
 
+def test_cross_sectional_live_adapter_preserves_verified_directional_score():
+    legs = [
+        {"symbol": "BTC-USDT-SWAP", "direction": "LONG",
+         "notional_weight": .5, "pair_spread": 4.0,
+         "directional_score": 3.5, "factor_gate_passed": True},
+        {"symbol": "XRP-USDT-SWAP", "direction": "SHORT",
+         "notional_weight": .5, "pair_spread": 4.0,
+         "directional_score": 3.0, "factor_gate_passed": True},
+    ]
+    selected = cross_sectional_selected_by_pool(
+        {"crypto": {"executable": True, "legs": legs}},
+        6.5,
+        require_factor_gate=True,
+    )
+    assert selected["crypto"]["LONG"][0]["score"] == 3.5
+    assert selected["crypto"]["SHORT"][0]["score"] == 3.0
+
+
+def test_cross_sectional_live_adapter_rejects_unverified_legacy_target():
+    legs = [
+        {"symbol": "BTC-USDT-SWAP", "direction": "LONG",
+         "notional_weight": .5, "pair_spread": 4.0},
+        {"symbol": "XRP-USDT-SWAP", "direction": "SHORT",
+         "notional_weight": .5, "pair_spread": 4.0},
+    ]
+    selected = cross_sectional_selected_by_pool(
+        {"crypto": {"executable": True, "legs": legs}},
+        6.5,
+        require_factor_gate=True,
+    )
+    assert selected["crypto"] == {"LONG": [], "SHORT": []}
+
+
+def test_cross_sectional_live_adapter_allows_verified_single_side_target():
+    selected = cross_sectional_selected_by_pool(
+        {"crypto": {"executable": True, "legs": [
+            {"symbol": "BTC-USDT-SWAP", "direction": "LONG",
+             "notional_weight": .3, "pair_spread": 3.5,
+             "directional_score": 3.5, "factor_gate_passed": True},
+        ]}},
+        6.5,
+        require_factor_gate=True,
+    )
+    assert [row["symbol"] for row in selected["crypto"]["LONG"]] == [
+        "BTC-USDT-SWAP"
+    ]
+    assert selected["crypto"]["SHORT"] == []
+
+
 def test_cross_sectional_live_adapter_rejects_unbalanced_target():
     selected = cross_sectional_selected_by_pool({
         "crypto": {"executable": True, "legs": [

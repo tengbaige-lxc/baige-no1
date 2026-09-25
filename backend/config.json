@@ -134,6 +134,13 @@
     "max_legs_per_side": 7,
     "minimum_alpha_spread": 1.0,
     "momentum_weight": 0.5,
+    "factor_entry_gate_enabled": true,
+    "directional_entry_score_min": 3.0,
+    "directional_entry_score_max": 4.0,
+    "minimum_directional_score_edge": 2.0,
+    "require_trend_4h_aligned": true,
+    "require_structure_or_adx": true,
+    "single_side_target_weight": 0.30,
     "max_same_side_correlation": 0.85,
     "rebalance_utc_hours": {
       "crypto": [0, 12],
