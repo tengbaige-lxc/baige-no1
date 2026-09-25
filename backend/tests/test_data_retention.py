@@ -7,7 +7,7 @@ def create_database(path):
     connection = sqlite3.connect(path)
     connection.executescript("""
         CREATE TABLE strategy_logs (signal TEXT, created_at TEXT);
-        CREATE TABLE derivatives_market_snapshots (created_at TEXT);
+        CREATE TABLE derivatives_market_snapshots (observed_at TEXT);
         CREATE TABLE operation_logs (created_at TEXT);
         CREATE TABLE trade_records (created_at TEXT);
         INSERT INTO strategy_logs VALUES ('HOLD', '2020-01-01 00:00:00');

@@ -19,7 +19,7 @@ class RetentionRule:
 
 DEFAULT_RETENTION_RULES = (
     RetentionRule("hold_strategy_logs", "strategy_logs", "created_at", 7, "signal = 'HOLD'"),
-    RetentionRule("derivatives_snapshots", "derivatives_market_snapshots", "created_at", 35),
+    RetentionRule("derivatives_snapshots", "derivatives_market_snapshots", "observed_at", 35),
     RetentionRule("operation_logs", "operation_logs", "created_at", 90),
 )
 
