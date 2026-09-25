@@ -24,7 +24,8 @@ set +a
   v5_execution.py app/services/strategy_engine.py
 /root/baige-no4/venv/bin/python -m pytest -q \
   test_v5_execution.py test_v5_cross_sectional.py \
-  test_v5_portfolio.py test_v5_research_archive.py test_v5_shadow.py
+  test_v5_portfolio.py test_v5_research_archive.py test_v5_shadow.py \
+  tests
 ```
 
 所有新变更统一写入 `CHANGELOG.md`；建库前的历史记录见 `docs/V5-CHANGELOG.md`。
