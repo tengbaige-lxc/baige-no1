@@ -9,7 +9,7 @@ _BURNED_SECRET_KEY = "baige-no1-fixed-secret-key-do-not-change-in-production"
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "白鸽一号"
-    VERSION: str = "5.0.0"
+    VERSION: str = "5.1.0"
     DESCRIPTION: str = "白鸽一号后台管理系统 API"
 
     API_V1_STR: str = "/api/v1"
