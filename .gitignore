@@ -1,0 +1,43 @@
+# Secrets and machine-local environment
+service.env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime state and generated market data
+backend/state/
+backend/data/
+backups/
+staging/
+
+# Databases, journals, logs, and temporary output
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+*.tmp
+*.pid
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local deployment drafts
+*.pending
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

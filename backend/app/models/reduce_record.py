@@ -1,0 +1,22 @@
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text
+from datetime import datetime, timezone
+from app.db.base import Base
+
+
+class ReduceRecord(Base):
+    """减仓记录"""
+    __tablename__ = "reduce_records"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    symbol = Column(String(30), nullable=False, index=True)
+    direction = Column(String(10), default="LONG")            # LONG / SHORT
+    entry_price = Column(Float, nullable=False)
+    original_size = Column(Float, nullable=False)
+    reduced_count = Column(Integer, default=0)
+    reduced_size = Column(Float, default=0.0)
+    remaining_size = Column(Float, nullable=False)
+    targets_hit = Column(Text, default="[]")                  # JSON字符串
+    reduce_reason = Column(Text, nullable=True)               # 减仓原因
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

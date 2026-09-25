@@ -1,0 +1,23 @@
+[Unit]
+Description=Baige V5 factor-aware portfolio trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/baige-no5/backend
+EnvironmentFile=/root/baige-no5/service.env
+ExecStart=/root/baige-no4/venv/bin/python -m uvicorn v5_main:app --host 127.0.0.1 --port 3045 --workers 1
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/root/baige-no5/backend/state
+InaccessiblePaths=/root/baige-no4/backend/state /root/baige-no3 /root/.openclaw /root/zenock
+PrivateTmp=true
+MemoryMax=1G
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
