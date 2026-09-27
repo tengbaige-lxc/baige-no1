@@ -509,7 +509,7 @@ async def lifespan(app):
         sizing_status=('20x_live_factor_caps_60_70_3pct_leg_risk'
                        if execution_enabled
                        else '20x_preview_factor_caps_60_70_3pct_leg_risk'),
-        rotation_status=('cross_sectional_targets_live_legacy_positions_exit_only'
+        rotation_status=('scheduled_alpha_hedge_dead_capital_rotation_live'
                          if cross_sectional_execution_enabled else
                          'live_ledger_owned_positions_only' if execution_enabled
                          else 'shadow_proposals_only_no_orders'),

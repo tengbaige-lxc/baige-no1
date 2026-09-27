@@ -147,6 +147,12 @@
       "tradfi": [0]
     },
     "cost_bps_per_side": 3.0,
+    "rotation_dead_slots": 2,
+    "rotation_min_alpha_improvement": 1.0,
+    "rotation_cost_multiple": 2.0,
+    "rotation_hedge_min_return_samples": 96,
+    "rotation_hedge_min_relative_volatility_reduction": 0.03,
+    "rotation_hedge_min_drawdown_reduction": 0.0025,
     "execution_enabled": true
   },
   "preexisting_position_policy": "count_risk_do_not_manage_without_ledger",

@@ -129,11 +129,27 @@ def test_target_rebalances_once_per_utc_day():
         state=same_day["state"], config=config(max_legs_per_side=1),
     )
     assert first["status"] == "SHADOW_REBALANCE"
+    assert first["rebalance_due"] is True
     assert same_day["status"] == "SHADOW_HOLD"
+    assert same_day["rebalance_due"] is False
     assert next_day["status"] == "SHADOW_REBALANCE"
     assert same_day["legs"] == first["legs"]
     assert same_day["target_frozen"] is True
     assert next_day["target_day"] != first["target_day"]
+
+
+def test_rotation_rankings_keep_non_target_alpha_for_safe_comparison():
+    rows = observations(["AAA-USDT-SWAP", "BBB-USDT-SWAP",
+                         "CCC-USDT-SWAP", "DDD-USDT-SWAP"])
+    plan = build_cross_sectional_shadow(
+        rows, pool="crypto", now_ms=NOW_MS,
+        config=config(max_legs_per_side=1, execution_enabled=True),
+    )
+    keys = {(row["symbol"], row["direction"])
+            for row in plan["rotation_rankings"]}
+    assert len(plan["rotation_rankings"]) == 8
+    assert ("BBB-USDT-SWAP", "LONG") in keys
+    assert all("directional_alpha" in row for row in plan["rotation_rankings"])
 
 
 def test_crypto_rebalances_twice_while_tradfi_remains_daily():

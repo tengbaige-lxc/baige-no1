@@ -1,41 +1,64 @@
-# Baige V5
+# 白鸽五号：横截面强弱组合
 
-V5 separates portfolio risk into equity, crypto, energy, metals, and rates.
-Opposite positions in different factors do not count as a hedge for each other.
+白鸽五号在 Crypto 与 TradFi 两个市场池内，分别做多相对最强标的、做空相对最弱标的。策略收益来源是强弱价差和确认后的方向倾斜，不要求机械凑成逐笔多空配对。
 
-V5 supports a reviewed shadow-to-live switch. The current small-live profile:
+## 1. 标的与排名
 
-- scans public market data across the isolated crypto and TradFi pools;
-- uses only its own encrypted account database and ledger;
-- limits each scan to one new leg;
-- uses 20x where the live instrument supports it;
-- caps planned loss per new leg at 3% of account equity;
-- uses a 2.5% software disaster stop and a 3% exchange-native backstop, while normal trend invalidation requires a closed 30-minute structure break;
-- counts pre-existing positions as risk but never manages them without V5 ledger ownership.
+- Crypto 与 TradFi 独立排名、独立调仓，不能把不同市场或不同经济风险类别当成对冲。
+- TradFi 继续拆分为股票、能源、贵金属和利率；Crypto 单独成组。
+- 月度流动性池按多日成交额更新，已知杠杆/反向 ETP 在没有可靠 Beta 模型前排除。
+- 排名综合方向评分、横截面强弱和波动率；新开仓仍须通过 4H 趋势和 30m 结构或 ADX 闸门。
+- 高分只决定是否值得参与，入场位置、剩余空间和止损预算决定仓位。
 
-## 2026-09-18 mandate split
+## 2. 调仓节奏
 
-- Baige V4 remains the directional trend strategy.
-- Baige V5 runs the cross-sectional long-short book for new entries. Positions
-  opened by the previous directional selector remain exit-managed, but that
-  selector can no longer submit new orders.
-- Crypto and TradFi are ranked separately. TradFi positions are neutralized
-  inside their economic risk factor; unrelated asset classes never count as a
-  hedge for each other.
-- The shadow universe is rebuilt from multi-day trailing quote liquidity once per UTC
-  calendar month. Targets rebalance once per UTC day, hold equal long and short
-  notional, and use inverse-volatility weights inside each factor.
-- Crypto targets refresh at 00:00 and 12:00 UTC (08:00 and 20:00 Beijing).
-  TradFi refreshes only at 00:00 UTC. Between those boundaries each target is
-  frozen: scans may fill missing target legs but cannot replace the ranked
-  list. Protective exits continue to run in real time.
-- Inverse products such as SQQQ/SOXS/UVXY are excluded until a verified beta
-  model can express their economic direction and leverage.
-- Known leveraged ETPs are excluded for the same reason. Energy, metals, rates,
-  equity and crypto must each be neutral inside their own economic factor.
-- Every rebalance, signal observation, estimated 3bp-per-side cost and
-  first available 24-hour outcome is retained for 400 days.
-- Only an explicitly executable, dollar-neutral target can reach
-  `V5ExecutionManager`. The live adapter rejects unbalanced targets, admits at
-  most one new leg per scan, counts every exchange position against portfolio
-  limits, and requires a verified native stop after each fill.
+- Crypto：每日 `00:00`、`12:00 UTC`，即北京时间 `08:00`、`20:00`。
+- TradFi：每日 `00:00 UTC`，即北京时间 `08:00`。
+- 两次调仓之间目标冻结；实时扫描只补齐缺失目标，不随盘中噪声频繁换仓。
+- 每次扫描最多新增一腿；每个账户每个调仓周期最多轮换一腿。
+
+## 3. 现有仓位分类
+
+每个调仓周期只对五号账本明确拥有的仓位分类，人工仓及其他策略仓只计入账户风险，不参与五号平仓：
+
+1. `ALPHA`：仍属于新目标组合，继续持有。
+2. `HEDGE`：虽不在新目标中，但在同一风险类别内能显著降低组合波动或最大回撤，继续持有。
+3. `DEAD`：既不在新目标中，也没有可验证的边际对冲贡献，进入轮换观察。
+4. `UNKNOWN`：历史数据不足或无法对齐，失败关闭，不轮换。
+
+单腿亏损不是淘汰条件。亏损仓只要仍有 Alpha 或确实降低组合风险，就继续承担组合职责；盈利仓若已失去 Alpha 与对冲价值，也可能成为死资金。
+
+## 4. 轮换条件
+
+死资金只有同时满足以下条件才会退出：
+
+- 连续两个不同调仓周期被判定为 `DEAD`；
+- 存在同市场池、同经济方向、同风险类别的合格替代标的；
+- 替代标的方向 Alpha 至少高 `1.0` 分；
+- 预期相对空间至少覆盖估算双边交易成本的 `2` 倍；
+- 30m 数据至少有 `96` 个对齐收益样本；
+- 单账户当前周期尚未执行其他轮换。
+
+执行时先市价退出旧腿并确认交易所持仓与账本都已关闭。替代腿最早在下一轮扫描开仓，避免同一扫描内先加后减或重复占用保证金。
+
+## 5. 对冲贡献
+
+- 只在相同风险类别内计算，防止跨类别假对冲。
+- 使用真实持仓名义金额加权的 30m 收益序列。
+- 删除某腿后，若组合波动上升至少 `3%`，或最大回撤恶化至少 `0.25` 个百分点，该腿视为有效对冲。
+- 历史不足、K线不连续或名义金额不可用时标记为 `UNKNOWN`，不会自动卖出。
+
+## 6. 风控与退出顺序
+
+1. 正常退出：30m 已收盘结构确认失效。
+2. 组合轮换：按上面的两周期死资金规则处理。
+3. 盈利管理：保留分段移动止盈和确认后的背离减仓。
+4. 灾难保护：软件价格止损 `2.5%`，交易所原生兜底 `3%`。
+
+策略使用 20 倍目标杠杆，但按止损距离反算仓位，单腿计划最大损失不超过账户权益 `3%`。已有人工仓仍占用组合上限和保证金预算，但五号不会接管其退出。
+
+## 7. 状态与审计
+
+- 调仓目标、死资金连续次数和退出后同周期重开封锁均写入持久化状态，服务重启后恢复。
+- 状态接口公开每次轮换的分类、边际对冲贡献和替代标的，不记录或暴露账户凭据。
+- 首次上线不会批量清仓：任何旧腿都必须从零开始完成两个调仓周期确认。

@@ -179,6 +179,7 @@ def _alpha_rows(rows, momentum_weight):
         ranked.append({
             **row,
             "score_spread": score_spread,
+            "relative_return_24h": row["return_24h"] - baseline,
             "normalized_momentum": normalized_momentum,
             "alpha": score_spread + float(momentum_weight) * normalized_momentum,
         })
@@ -328,6 +329,9 @@ def _neutral_weights(selected):
                     "alpha": row["alpha"],
                     "score_spread": row["score_spread"],
                     "normalized_momentum": row["normalized_momentum"],
+                    "expected_edge_fraction": max(
+                        0.0, sign * row["relative_return_24h"]
+                    ),
                     "pair_spread": row["pair_spread"],
                     "liquidity_trailing": row["liquidity"],
                     "volatility_30m": row["volatility"],
@@ -375,6 +379,9 @@ def _directional_weights(selected, config):
                 "alpha": row["alpha"],
                 "score_spread": row["score_spread"],
                 "normalized_momentum": row["normalized_momentum"],
+                "expected_edge_fraction": max(
+                    0.0, sign * row["relative_return_24h"]
+                ),
                 "pair_spread": row["pair_spread"],
                 "liquidity_trailing": row["liquidity"],
                 "volatility_30m": row["volatility"],
@@ -405,6 +412,29 @@ def _turnover(legs, state, pool):
                      for key in keys), new
 
 
+def _rotation_rankings(rows, config):
+    rankings = []
+    for row in rows:
+        for direction in ("LONG", "SHORT"):
+            sign = 1.0 if direction == "LONG" else -1.0
+            signal = (row.get("signals") or {}).get(direction) or {}
+            rankings.append({
+                "symbol": row["symbol"],
+                "pool": row["pool"],
+                "direction": direction,
+                "risk_factor": row["risk_factor"],
+                "directional_alpha": sign * float(row.get("alpha") or 0),
+                "directional_score": float(signal.get("score") or 0),
+                "expected_edge_fraction": max(
+                    0.0, sign * float(row.get("relative_return_24h") or 0)
+                ),
+                "factor_gate_passed": _directional_entry_allowed(
+                    row, direction, config
+                ),
+            })
+    return rankings
+
+
 def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, config=None):
     """Build one daily target book for a single market pool."""
     config = config or {}
@@ -413,10 +443,14 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
     paired = _paired_rows(observations, pool)
     universe, refreshed = _monthly_universe(paired, pool, month, state, config)
     allowed = set(universe)
+    all_ranked = _alpha_rows(
+        paired, config.get("momentum_weight", 0.5)
+    ) if paired else []
     ranked = _alpha_rows(
         [row for row in paired if row["symbol"] in allowed],
         config.get("momentum_weight", 0.5),
     ) if allowed else []
+    rotation_rankings = _rotation_rankings(all_ranked, config)
     max_per_side = max(1, int(config.get("max_legs_per_side", 4)))
     minimum_alpha = float(config.get("minimum_alpha_spread", 1.0))
     maximum_correlation = float(config.get("max_same_side_correlation", 0.85))
@@ -500,7 +534,9 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
         "target_day": next_state.get("last_rebalance_day"),
         "target_slot": next_state.get("last_rebalance_slot", last_slot),
         "rebalance_utc_hours": rebalance_hours,
+        "rebalance_due": due,
         "target_frozen": bool(legs) and not due,
+        "rotation_rankings": rotation_rankings,
         "estimated_one_way_turnover": turnover,
         "estimated_cost_fraction": turnover * cost_bps / 10000,
         "state": next_state,

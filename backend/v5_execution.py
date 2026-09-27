@@ -26,6 +26,11 @@ from v5_portfolio import (
 from app.services.native_stop_validation import (
     native_stop_matches_target,
 )
+from v5_rotation import (
+    choose_rotation_replacement,
+    classify_leg,
+    marginal_hedge_contributions,
+)
 
 
 STRATEGY_IDS = {
@@ -394,6 +399,7 @@ class V5ExecutionManager:
         self.fail_closed_blocks = dict(self._state.get("fail_closed_blocks") or {})
         self.exit_reentry_blocks = dict(self._state.get("exit_reentry_blocks") or {})
         self.active_target_slots = dict(self._state.get("active_target_slots") or {})
+        self.rotation_dead_counts = dict(self._state.get("rotation_dead_counts") or {})
         if self.engine is not None:
             self.engine._post_reduce_callback = self._post_reduce_callback
 
@@ -411,12 +417,42 @@ class V5ExecutionManager:
             "fail_closed_blocks": self.fail_closed_blocks,
             "exit_reentry_blocks": self.exit_reentry_blocks,
             "active_target_slots": self.active_target_slots,
+            "rotation_dead_counts": self.rotation_dead_counts,
         }))
         temporary.replace(self.state_file)
 
     def _save_last_processed(self, value: str) -> None:
         self.last_processed = value
         self._save_state()
+
+    @staticmethod
+    def _rotation_key(account_id: int, symbol: str, direction: str) -> str:
+        return f"{account_id}|{symbol.upper()}|{direction.upper()}"
+
+    def _record_rotation_classification(
+        self,
+        account_id: int,
+        symbol: str,
+        direction: str,
+        pool: str,
+        target_slot: str,
+        classification: str,
+    ) -> int:
+        key = self._rotation_key(account_id, symbol, direction)
+        if classification != "DEAD":
+            self.rotation_dead_counts.pop(key, None)
+            return 0
+        previous = self.rotation_dead_counts.get(key) or {}
+        if previous.get("target_slot") == target_slot:
+            return int(previous.get("count") or 0)
+        count = int(previous.get("count") or 0) + 1
+        self.rotation_dead_counts[key] = {
+            "count": count,
+            "pool": pool,
+            "target_slot": target_slot,
+            "classified_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return count
 
     @staticmethod
     def _block_key(account_id: int, symbol: str, direction: str) -> str:
@@ -768,6 +804,252 @@ class V5ExecutionManager:
                 )
             return
 
+    @staticmethod
+    def _rotation_notional(position: dict) -> float:
+        try:
+            notional = abs(float(position.get("notionalUsd") or 0))
+            if notional > 0:
+                return notional
+            quantity = abs(float(position.get("pos") or 0))
+            price = float(position.get("markPx") or position.get("last") or 0)
+            return quantity * price if quantity > 0 and price > 0 else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    async def _rotation_markets(self, symbols: set[str]) -> dict[str, dict | None]:
+        semaphore = asyncio.Semaphore(4)
+
+        async def load(symbol: str):
+            async with semaphore:
+                try:
+                    candles = await asyncio.wait_for(
+                        okx_manager.get_candles(symbol, "30m", 240), timeout=12)
+                    return symbol, market_features(candles, time.time() * 1000)
+                except Exception:
+                    return symbol, None
+
+        return dict(await asyncio.gather(*(load(symbol) for symbol in sorted(symbols))))
+
+    async def _ledger_owned_rotation_rows(
+        self,
+        account: ExchangeConfig,
+        strategies: dict,
+        positions: list[dict],
+    ) -> list[dict]:
+        live = {
+            key: position for position in positions
+            if (key := self._position_key(position)) is not None
+        }
+        owned = {}
+        for (pool, strategy_direction), strategy in strategies.items():
+            for symbol, direction in await self.engine._get_strategy_live_position_keys(
+                    account, strategy):
+                key = (str(symbol).upper(), str(direction).upper())
+                if key not in live or key[1] != strategy_direction:
+                    continue
+                owned.setdefault(key, {
+                    "symbol": key[0],
+                    "direction": key[1],
+                    "pool": pool,
+                    "risk_direction": economic_direction_for_symbol(*key),
+                    "risk_factor": risk_factor_for_symbol(key[0], pool),
+                    "notional_weight": self._rotation_notional(live[key]),
+                    "strategy": strategy,
+                })
+        markets = await self._rotation_markets({row["symbol"] for row in owned.values()})
+        return [{**row, "market": markets.get(row["symbol"])}
+                for row in owned.values()]
+
+    async def _close_for_rotation(
+        self,
+        strategy: TradingStrategy,
+        account: ExchangeConfig,
+        symbol: str,
+        direction: str,
+        reason: str,
+    ) -> bool:
+        await self._emergency_close(strategy, account, symbol, direction, reason)
+        for _ in range(3):
+            await asyncio.sleep(1)
+            keys = {key for position in await self._live_positions(account)
+                    if (key := self._position_key(position)) is not None}
+            if (symbol.upper(), direction.upper()) not in keys:
+                return True
+        return False
+
+    async def _process_account_rotation(
+        self,
+        account: ExchangeConfig,
+        plans: dict,
+        selected_by_pool: dict,
+        strategies: dict,
+        changed_pools: set[str],
+    ) -> dict:
+        positions = await self._live_positions(account)
+        rows = await self._ledger_owned_rotation_rows(account, strategies, positions)
+        active_keys = {
+            self._rotation_key(account.id, row["symbol"], row["direction"])
+            for row in rows
+        }
+        prefix = f"{account.id}|"
+        for key in list(self.rotation_dead_counts):
+            if key.startswith(prefix) and key not in active_keys:
+                del self.rotation_dead_counts[key]
+
+        targets = {
+            pool: {
+                (str(leg.get("symbol") or "").upper(),
+                 str(leg.get("direction") or "").upper())
+                for side in ("LONG", "SHORT")
+                for leg in (selected_by_pool.get(pool, {}).get(side) or [])
+            }
+            for pool in changed_pools
+        }
+        rankings = {
+            pool: {
+                (str(row.get("symbol") or "").upper(),
+                 str(row.get("direction") or "").upper()): row
+                for row in (plans.get(pool, {}).get("rotation_rankings") or [])
+            }
+            for pool in changed_pools
+        }
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            if row["pool"] in changed_pools and row.get("market") \
+                    and row.get("notional_weight", 0) > 0:
+                groups.setdefault((row["pool"], row["risk_factor"]), []).append(row)
+        rotation_config = self.config.get("cross_sectional_shadow") or {}
+        minimum_samples = int(rotation_config.get(
+            "rotation_hedge_min_return_samples", 96))
+        contributions = {}
+        for group_rows in groups.values():
+            contributions.update(marginal_hedge_contributions(
+                group_rows, min_samples=minimum_samples))
+
+        min_volatility = float(rotation_config.get(
+            "rotation_hedge_min_relative_volatility_reduction", 0.03))
+        min_drawdown = float(rotation_config.get(
+            "rotation_hedge_min_drawdown_reduction", 0.0025))
+        required_slots = max(2, int(rotation_config.get("rotation_dead_slots", 2)))
+        live_keys = {(row["symbol"], row["direction"]) for row in rows}
+        target_candidates = []
+        for pool in changed_pools:
+            for side in ("LONG", "SHORT"):
+                for leg in selected_by_pool.get(pool, {}).get(side) or []:
+                    target_candidates.append({
+                        **leg,
+                        "pool": pool,
+                        "direction": side,
+                        "directional_alpha": float(
+                            leg.get("pair_spread", leg.get("quality", 0)) or 0
+                        ),
+                        "expected_edge_fraction": float(
+                            leg.get("expected_edge_fraction") or 0
+                        ),
+                    })
+        cost_bps = max(0.0, float(rotation_config.get("cost_bps_per_side", 3.0)))
+        minimum_expected_edge = (
+            cost_bps * 2 * float(rotation_config.get("rotation_cost_multiple", 2.0))
+            / 10000
+        )
+        minimum_improvement = float(rotation_config.get(
+            "rotation_min_alpha_improvement", 1.0))
+        assessments = []
+        choices = []
+        for row in rows:
+            pool = row["pool"]
+            if pool not in changed_pools:
+                continue
+            key = (row["symbol"], row["direction"])
+            classification = classify_leg(
+                in_target=key in targets.get(pool, set()),
+                contribution=contributions.get(key),
+                minimum_relative_volatility_reduction=min_volatility,
+                minimum_drawdown_reduction=min_drawdown,
+            )
+            slot = str(plans.get(pool, {}).get("target_slot") or "")
+            dead_count = self._record_rotation_classification(
+                account.id, row["symbol"], row["direction"], pool, slot,
+                classification,
+            )
+            ranking = rankings.get(pool, {}).get(key)
+            assessment = {
+                "symbol": row["symbol"],
+                "direction": row["direction"],
+                "pool": pool,
+                "risk_factor": row["risk_factor"],
+                "classification": classification,
+                "dead_slots": dead_count,
+                "hedge_contribution": contributions.get(key),
+            }
+            assessments.append(assessment)
+            if classification != "DEAD" or dead_count < required_slots or not ranking:
+                continue
+            stale = {
+                **row,
+                "directional_alpha": float(ranking.get("directional_alpha") or 0),
+            }
+            replacement = choose_rotation_replacement(
+                stale,
+                target_candidates,
+                live_keys=live_keys,
+                minimum_alpha_improvement=minimum_improvement,
+                minimum_expected_edge_fraction=minimum_expected_edge,
+            )
+            if replacement:
+                choices.append((replacement["alpha_improvement"], row, replacement))
+        self._save_state()
+        if not choices:
+            return {"status": "OBSERVE", "rotated": [], "assessments": assessments}
+        choices.sort(key=lambda item: (-item[0], item[1]["symbol"]))
+        _, stale, replacement = choices[0]
+        reason = (
+            f"V5 scheduled dead-capital rotation after {required_slots} slots; "
+            f"replacement={replacement['symbol']} alpha_improvement="
+            f"{replacement['alpha_improvement']:.3f}"
+        )
+        closed = await self._close_for_rotation(
+            stale["strategy"], account, stale["symbol"], stale["direction"], reason)
+        if not closed:
+            return {"status": "BLOCKED", "rotated": [],
+                    "reason": "rotation_close_unverified", "assessments": assessments}
+        self.rotation_dead_counts.pop(
+            self._rotation_key(account.id, stale["symbol"], stale["direction"]), None)
+        self._save_state()
+        return {
+            "status": "ROTATED",
+            "rotated": [{
+                "closed_symbol": stale["symbol"],
+                "closed_direction": stale["direction"],
+                "replacement_symbol": replacement["symbol"],
+                "replacement_direction": replacement["direction"],
+                "alpha_improvement": round(replacement["alpha_improvement"], 4),
+            }],
+            "assessments": assessments,
+        }
+
+    async def _process_rebalance_rotations(
+        self,
+        plans: dict,
+        selected_by_pool: dict,
+        changed_pools: set[str],
+    ) -> dict:
+        async with self.lock:
+            strategies = await self._strategies()
+            results = {}
+            for account in await self._accounts():
+                key = f"{account.id}:{account.name}"
+                try:
+                    results[key] = await self._process_account_rotation(
+                        account, plans, selected_by_pool, strategies, changed_pools)
+                except Exception as exc:
+                    results[key] = {"status": "ERROR", "error": type(exc).__name__}
+                    print(f"v5_rotation_error account_id={account.id} "
+                          f"error={type(exc).__name__}", flush=True)
+            rotated = any(result.get("rotated") for result in results.values())
+            return {"status": "ROTATED" if rotated else "OBSERVE",
+                    "accounts": results}
+
     async def _open_leg(self, strategy, account, leg: dict, margin: float) -> bool:
         symbol, direction = leg["symbol"], leg["direction"]
         ticker = await okx_manager.get_ticker(symbol)
@@ -1002,6 +1284,12 @@ class V5ExecutionManager:
             for pool, plan in (plans or {}).items()
             if isinstance(plan, dict) and plan.get("target_slot")
         }
+        changed_pools = {
+            pool for pool, slot in slots.items()
+            if self.active_target_slots.get(pool) != slot
+            and bool((plans.get(pool) or {}).get("rebalance_due"))
+            and (plans.get(pool) or {}).get("status") == "LIVE_REBALANCE"
+        }
         if slots and any(self.active_target_slots.get(pool) != slot
                          for pool, slot in slots.items()):
             self.active_target_slots.update(slots)
@@ -1017,12 +1305,23 @@ class V5ExecutionManager:
                 )
             ),
         )
+        rotation = None
+        if changed_pools:
+            rotation = await self._process_rebalance_rotations(
+                plans, selected, changed_pools)
+            if rotation.get("status") == "ROTATED":
+                # Open the verified replacement on a later scan, after the
+                # exchange and ledger both confirm the outgoing leg is gone.
+                self._save_last_processed(completed)
+                return {"status": "ROTATED", "mode": "cross_sectional_live",
+                        "rotation": rotation}
         if not any(rows.get(side) for rows in selected.values()
                    for side in ("LONG", "SHORT")):
             return {"status": "WAIT", "mode": "cross_sectional_live",
-                    "reason": "no_valid_executable_factor_target"}
+                    "reason": "no_valid_executable_factor_target",
+                    "rotation": rotation}
         result = await self.process_scan(completed, selected)
-        return {**result, "mode": "cross_sectional_live"}
+        return {**result, "mode": "cross_sectional_live", "rotation": rotation}
 
     async def risk_loop(self) -> None:
         while True:
