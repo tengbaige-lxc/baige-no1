@@ -132,6 +132,7 @@ def test_target_rebalances_once_per_utc_day():
     assert first["rebalance_due"] is True
     assert same_day["status"] == "SHADOW_HOLD"
     assert same_day["rebalance_due"] is False
+    assert same_day["rotation_rankings"] == []
     assert next_day["status"] == "SHADOW_REBALANCE"
     assert same_day["legs"] == first["legs"]
     assert same_day["target_frozen"] is True

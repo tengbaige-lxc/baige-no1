@@ -536,7 +536,9 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
         "rebalance_utc_hours": rebalance_hours,
         "rebalance_due": due,
         "target_frozen": bool(legs) and not due,
-        "rotation_rankings": rotation_rankings,
+        # Rankings are consumed only when a new slot is due. Omitting them
+        # from five-minute hold snapshots keeps scan history bounded.
+        "rotation_rankings": rotation_rankings if due else [],
         "estimated_one_way_turnover": turnover,
         "estimated_cost_fraction": turnover * cost_bps / 10000,
         "state": next_state,
