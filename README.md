@@ -2,7 +2,7 @@
 
 白鸽五号是 Crypto 与 TradFi 分池运行的横截面多空组合策略。
 
-当前正式版本：`5.1.1`，版本源文件为 `VERSION`。
+当前正式版本：`5.4.1`，版本源文件为 `VERSION`。
 
 ## 仓库边界
 
@@ -28,4 +28,11 @@ set +a
   tests
 ```
 
-所有新变更统一写入 `CHANGELOG.md`；建库前的历史记录见 `docs/V5-CHANGELOG.md`。
+## 文档
+
+- [最新策略说明](docs/V5-STRATEGY-SPEC.md)：当前实盘入口、组合、仓位、退出、轮换、已知差异与因子研究流程。
+- [版本改动记录](CHANGELOG.md)：建库后的代码和策略变化。
+- [历史策略记录](docs/V5-CHANGELOG.md)：建库前的策略演进与上线记录。
+- [数据库操作](docs/DATABASE-OPERATIONS.md)：备份、迁移和数据保留流程。
+
+所有新变更统一写入 `CHANGELOG.md`。改变交易行为时，还必须同步更新最新策略说明和相应回归测试。
