@@ -10,6 +10,7 @@ V5 supports a reviewed shadow-to-live switch. The current small-live profile:
 - limits each scan to one new leg;
 - uses 20x where the live instrument supports it;
 - caps planned loss per new leg at 3% of account equity;
+- uses a 2.5% software disaster stop and a 3% exchange-native backstop, while normal trend invalidation requires a closed 30-minute structure break;
 - counts pre-existing positions as risk but never manages them without V5 ledger ownership.
 
 ## 2026-09-18 mandate split

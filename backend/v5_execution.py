@@ -23,7 +23,9 @@ from v5_portfolio import (
     correlation,
     _position_market,
 )
-from app.services.native_stop_validation import native_stop_covers
+from app.services.native_stop_validation import (
+    native_stop_matches_target,
+)
 
 
 STRATEGY_IDS = {
@@ -649,8 +651,14 @@ class V5ExecutionManager:
             decrypt_text(account.api_passphrase or ""), inst_id=symbol,
             simulated=bool(account.is_testnet),
         )
-        return any(native_stop_covers(row, symbol, direction,
-                   abs(float(position["pos"])), expected) for row in pending or [])
+        return any(native_stop_matches_target(
+            row,
+            symbol,
+            direction,
+            abs(float(position["pos"])),
+            expected,
+            tick,
+        ) for row in pending or [])
 
     async def reconcile_native_stops(self, account, strategies) -> bool:
         """Only repair V5 ledger-owned positions, never adopt manual holdings."""

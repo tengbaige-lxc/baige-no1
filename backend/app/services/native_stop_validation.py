@@ -25,3 +25,19 @@ def native_stop_covers(row, symbol, direction, quantity, expected_trigger):
         return trigger + 1e-10 >= expected_trigger if direction == "LONG" else trigger <= expected_trigger + 1e-10
     except (TypeError, ValueError, OverflowError):
         return False
+
+
+def native_stop_matches_target(
+    row, symbol, direction, quantity, expected_trigger, tick_size=None
+):
+    """Require the managed backstop to match the configured disaster line."""
+    if not native_stop_covers(row, symbol, direction, quantity, expected_trigger):
+        return False
+    try:
+        trigger = float(row.get("slTriggerPx") or 0)
+        expected = float(expected_trigger)
+        tick = abs(float(tick_size or 0))
+        tolerance = max(tick * 0.51, abs(expected) * 1e-9, 1e-10)
+        return abs(trigger - expected) <= tolerance
+    except (TypeError, ValueError, OverflowError):
+        return False

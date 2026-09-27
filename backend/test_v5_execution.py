@@ -11,6 +11,7 @@ from v5_execution import (
     select_legs,
     select_pairs,
 )
+from app.services.native_stop_validation import native_stop_matches_target
 
 
 def leg(symbol, direction, quality):
@@ -31,17 +32,38 @@ def test_select_pairs_merges_pools_and_limits_account_book():
     assert len({p["SHORT"]["symbol"] for p in pairs}) == 3
 
 
-def test_execution_params_always_has_hard_and_native_stop():
+def test_execution_params_separates_software_and_exchange_disaster_stops():
     cfg = {"requested_leverage": 30, "minimum_leg_margin_usdt": 2,
-           "hard_stop_price_pct": 0.015, "native_stop_price_pct": 0.02}
+           "hard_stop_price_pct": 0.025, "native_stop_price_pct": 0.03}
     params = execution_params(cfg, ["BTC-USDT-SWAP"])
     assert params["leverage"] == 30
     assert params["margin_mode"] == "cross"
     assert params["native_stop_enabled"] is True
-    assert params["native_stop_pct"] == 0.02
+    assert params["native_stop_pct"] == 0.03
     assert params["max_open_symbols"] == 14
     assert params["exit_factors"]["hard_stop"]["reduce_ratio"] == 1.0
     assert params["exit_factors"]["time_stop"]["enabled"] is False
+
+
+def test_managed_native_stop_must_match_the_current_disaster_line():
+    row = {
+        "sz": "1",
+        "slTriggerPx": "97",
+        "algoClOrdId": "bg2sl-current",
+        "instId": "BTC-USDT-SWAP",
+        "posSide": "long",
+        "side": "sell",
+        "state": "live",
+        "slOrdPx": "-1",
+        "reduceOnly": "true",
+    }
+    assert native_stop_matches_target(
+        row, "BTC-USDT-SWAP", "LONG", 1, 97, 0.1
+    )
+    row["slTriggerPx"] = "98"
+    assert not native_stop_matches_target(
+        row, "BTC-USDT-SWAP", "LONG", 1, 97, 0.1
+    )
 
 
 def test_cross_sectional_live_adapter_accepts_only_neutral_executable_targets():

@@ -74,8 +74,8 @@
   },
   "margin_mode": "cross",
   "minimum_leg_margin_usdt": 2.0,
-  "hard_stop_price_pct": 0.015,
-  "native_stop_price_pct": 0.02,
+  "hard_stop_price_pct": 0.025,
+  "native_stop_price_pct": 0.03,
   "max_loss_per_leg_equity_fraction": 0.03,
   "params": {
     "trend_v3_enabled": true,
