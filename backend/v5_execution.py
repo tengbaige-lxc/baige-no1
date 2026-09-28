@@ -99,10 +99,11 @@ def execution_params(config: dict, symbols: list[str]) -> dict:
                 "metric": "upl_ratio",
                 "activation": 0.40,
                 "callback": 0.38,
+                "callback_mode": "peak_profit_ratio",
                 "reduce_ratio": 0.25,
                 "callback_tiers": [
-                    {"peak": 0.80, "callback": 0.30},
-                    {"peak": 1.50, "callback": 0.25},
+                    {"min_peak": 0.80, "callback": 0.30},
+                    {"min_peak": 1.50, "callback": 0.25},
                 ],
             },
             "time_stop": {"enabled": False},

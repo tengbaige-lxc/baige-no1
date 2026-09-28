@@ -61,6 +61,12 @@ def test_execution_params_separates_software_and_exchange_disaster_stops():
     assert params["max_open_symbols"] == 14
     assert params["exit_factors"]["hard_stop"]["reduce_ratio"] == 1.0
     assert params["exit_factors"]["time_stop"]["enabled"] is False
+    trailing = params["exit_factors"]["trailing_stop"]
+    assert trailing["callback_mode"] == "peak_profit_ratio"
+    assert trailing["callback_tiers"] == [
+        {"min_peak": 0.80, "callback": 0.30},
+        {"min_peak": 1.50, "callback": 0.25},
+    ]
 
 
 def test_managed_native_stop_must_match_the_current_disaster_line():

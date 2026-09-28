@@ -21,6 +21,7 @@ from app.services.strategy_engine import StrategyEngine
 from v5_portfolio import build_portfolio, economic_direction_for_symbol, market_features
 from v5_cross_sectional import build_cross_sectional_shadow
 from v5_research_archive import archive_cross_sectional_scan, research_summary
+from v5_research_optimizer import factor_grid_report
 from v5_execution import V5ExecutionManager
 from v4_candidate_window import revalidation_allows, update_candidate_cache
 from account_metrics import summarize_events
@@ -588,6 +589,11 @@ def get_status():
 @app.get('/cross-sectional-research')
 def cross_sectional_research():
     return research_summary(STATE)
+
+
+@app.get('/research-optimization')
+def research_optimization():
+    return factor_grid_report(STATE)
 
 
 @app.get('/account-performance')
