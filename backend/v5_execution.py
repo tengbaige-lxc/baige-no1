@@ -387,6 +387,158 @@ def factor_margin_remaining(equity: float, factor: str, used_margin: float,
                max(0.0, float(used_margin)))
 
 
+def is_portfolio_profit_reduce_reason(reason: str) -> bool:
+    """Return whether an exit is a discretionary V5 profit trim."""
+    normalized = str(reason or "").strip().lower()
+    return any(marker in normalized for marker in (
+        "trailing stop",
+        "dynamic profit lock",
+        "profit tier",
+        "take profit",
+    ))
+
+
+def _position_initial_margin(position: dict) -> float:
+    try:
+        margin = float(position.get("imr") or position.get("margin") or 0)
+        if margin > 0:
+            return margin
+        notional = abs(float(position.get("notionalUsd") or 0))
+        leverage = float(position.get("lever") or 0)
+        return notional / leverage if notional > 0 and leverage > 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _reduction_scope_allowed(
+    before: dict[str, float],
+    after: dict[str, float],
+    normal_limit: float,
+    hard_limit: float,
+) -> tuple[bool, str]:
+    """Keep ordinary books within 60:40 and never worsen a stressed book."""
+    before_total = sum(before.values())
+    after_total = sum(after.values())
+    if after_total <= 1e-9:
+        return True, "scope_closed"
+    if before_total <= 1e-9:
+        return False, "missing_pre_reduce_exposure"
+
+    before_share = max(before.values()) / before_total
+    after_share = max(after.values()) / after_total
+    before_net = abs(before["LONG"] - before["SHORT"])
+    after_net = abs(after["LONG"] - after["SHORT"])
+    normal = max(0.5, min(1.0, float(normal_limit)))
+    hard = max(normal, min(1.0, float(hard_limit)))
+
+    if after_share <= normal + 1e-9:
+        return True, "within_normal_band"
+    if after_share > hard + 1e-9 and after_net >= before_net - 1e-9:
+        return False, "hard_side_share_would_not_recover"
+    if before_share > normal + 1e-9 and after_net < before_net - 1e-9:
+        return True, "stressed_book_net_exposure_reduced"
+    return False, "normal_side_share_would_be_exceeded"
+
+
+def profit_reduce_exposure_decision(
+    positions: list[dict],
+    symbol: str,
+    direction: str,
+    reduce_quantity: float,
+    crypto_symbols: set[str] | None = None,
+    *,
+    normal_max_side_share: float = 0.60,
+    strong_max_side_share: float = 0.70,
+    factor_max_side_share: float = 0.70,
+) -> dict:
+    """Evaluate a V5 profit trim against account and factor exposure."""
+    target_symbol = str(symbol or "").upper()
+    target_direction = str(direction or "").upper()
+    crypto = {str(item).upper() for item in (crypto_symbols or set())}
+    rows = []
+    target = None
+    for position in positions or []:
+        try:
+            size = abs(float(position.get("pos") or 0))
+        except (TypeError, ValueError):
+            continue
+        if size <= 0:
+            continue
+        position_symbol = str(position.get("instId") or "").upper()
+        side = str(position.get("posSide") or "net").lower()
+        raw_size = float(position.get("pos") or 0)
+        contract_direction = (
+            "SHORT" if side == "short" or (side == "net" and raw_size < 0)
+            else "LONG"
+        )
+        margin = _position_initial_margin(position)
+        if margin <= 0:
+            continue
+        pool = "crypto" if position_symbol in crypto else "tradfi"
+        row = {
+            "symbol": position_symbol,
+            "direction": contract_direction,
+            "risk_direction": economic_direction_for_symbol(
+                position_symbol, contract_direction
+            ),
+            "risk_factor": risk_factor_for_symbol(position_symbol, pool),
+            "margin": margin,
+            "size": size,
+        }
+        rows.append(row)
+        if position_symbol == target_symbol and contract_direction == target_direction:
+            target = row
+
+    if target is None:
+        return {"allowed": False, "reason": "target_position_or_margin_not_found"}
+    try:
+        fraction = min(1.0, max(0.0, float(reduce_quantity)) / target["size"])
+    except (TypeError, ValueError, ZeroDivisionError):
+        fraction = 0.0
+    reduction_margin = target["margin"] * fraction
+    if reduction_margin <= 0:
+        return {"allowed": False, "reason": "invalid_reduction_margin"}
+
+    account_before = {"LONG": 0.0, "SHORT": 0.0}
+    factor_before = {"LONG": 0.0, "SHORT": 0.0}
+    for row in rows:
+        account_before[row["risk_direction"]] += row["margin"]
+        if row["risk_factor"] == target["risk_factor"]:
+            factor_before[row["risk_direction"]] += row["margin"]
+    account_after = dict(account_before)
+    factor_after = dict(factor_before)
+    account_after[target["risk_direction"]] = max(
+        0.0, account_after[target["risk_direction"]] - reduction_margin
+    )
+    factor_after[target["risk_direction"]] = max(
+        0.0, factor_after[target["risk_direction"]] - reduction_margin
+    )
+
+    account_allowed, account_reason = _reduction_scope_allowed(
+        account_before, account_after,
+        normal_max_side_share, strong_max_side_share,
+    )
+    factor_allowed, factor_reason = _reduction_scope_allowed(
+        factor_before, factor_after,
+        normal_max_side_share, factor_max_side_share,
+    )
+    allowed = account_allowed and factor_allowed
+    return {
+        "allowed": allowed,
+        "reason": (
+            "portfolio_profit_reduce_allowed" if allowed
+            else f"exposure_guard account={account_reason} factor={factor_reason}"
+        ),
+        "risk_direction": target["risk_direction"],
+        "risk_factor": target["risk_factor"],
+        "reduction_margin": round(reduction_margin, 8),
+        "account_before": account_before,
+        "account_after": account_after,
+        "factor_before": factor_before,
+        "factor_after": factor_after,
+    }
+
+
 class V5ExecutionManager:
     def __init__(self, engine, config: dict, universes: dict, state_dir: Path):
         self.engine = engine
@@ -401,6 +553,7 @@ class V5ExecutionManager:
         self.active_target_slots = dict(self._state.get("active_target_slots") or {})
         self.rotation_dead_counts = dict(self._state.get("rotation_dead_counts") or {})
         if self.engine is not None:
+            self.engine._pre_reduce_callback = self._pre_reduce_callback
             self.engine._post_reduce_callback = self._post_reduce_callback
 
     def _load_state(self) -> dict:
@@ -560,6 +713,39 @@ class V5ExecutionManager:
             f"v5_reentry_blocked account={account.id} symbol={symbol.upper()} "
             f"direction={direction.upper()} pool={pool} target_slot={target_slot}",
             flush=True,
+        )
+
+    async def _pre_reduce_callback(
+        self,
+        *,
+        strategy: TradingStrategy,
+        account: ExchangeConfig,
+        symbol: str,
+        direction: str,
+        quantity: float,
+        reason: str,
+        params: dict,
+    ) -> dict:
+        if strategy.id not in STRATEGY_IDS.values():
+            return {"allowed": True, "reason": "not_v5"}
+        if not is_portfolio_profit_reduce_reason(reason):
+            return {"allowed": True, "reason": "risk_exit_not_gated"}
+        positions = await self._live_positions(account)
+        return profit_reduce_exposure_decision(
+            positions,
+            symbol,
+            direction,
+            quantity,
+            set(self.universes.get("crypto", [])),
+            normal_max_side_share=float(
+                self.config.get("normal_max_side_risk_share", 0.60)
+            ),
+            strong_max_side_share=float(
+                self.config.get("strong_max_side_risk_share", 0.70)
+            ),
+            factor_max_side_share=float(
+                self.config.get("max_factor_side_risk_share", 0.70)
+            ),
         )
 
     async def bootstrap(self) -> None:

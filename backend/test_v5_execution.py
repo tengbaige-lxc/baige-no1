@@ -1,3 +1,5 @@
+import asyncio
+
 from v5_execution import (
     V5ExecutionManager,
     blocks_reentry_after_exit,
@@ -5,17 +7,33 @@ from v5_execution import (
     dynamic_exposure_plan,
     execution_params,
     factor_margin_remaining,
+    is_portfolio_profit_reduce_reason,
     loss_bounded_margin_cap,
+    profit_reduce_exposure_decision,
     prioritize_factor_recovery,
     restrict_legs_for_exposure_recovery,
     select_legs,
     select_pairs,
+)
+from app.services.exit_policy import (
+    TrailingPositionState,
+    consume_profit_exit_cycle,
 )
 from app.services.native_stop_validation import native_stop_matches_target
 
 
 def leg(symbol, direction, quality):
     return {"symbol": symbol, "direction": direction, "quality": quality, "score": 6.5}
+
+
+def position(symbol, direction, margin, size=4):
+    return {
+        "instId": symbol,
+        "posSide": direction.lower(),
+        "pos": str(size if direction == "LONG" else -size),
+        "imr": str(margin),
+        "lever": "20",
+    }
 
 
 def test_select_pairs_merges_pools_and_limits_account_book():
@@ -385,6 +403,84 @@ def test_exit_reason_classifier_blocks_only_invalidated_targets():
     assert blocks_reentry_after_exit("structure invalid")
     assert not blocks_reentry_after_exit("trailing stop peak=80%")
     assert not blocks_reentry_after_exit("5m divergence partial reduce")
+
+
+def test_profit_reduce_reason_classifier_excludes_risk_exits():
+    assert is_portfolio_profit_reduce_reason("trailing stop peak=80%")
+    assert is_portfolio_profit_reduce_reason("dynamic profit lock floor=12")
+    assert not is_portfolio_profit_reduce_reason("hard stop price change 2.5%")
+    assert not is_portfolio_profit_reduce_reason("trendline_break 30m close")
+
+
+def test_profit_reduce_blocks_scarce_hedge_and_allows_dominant_side_trim():
+    positions = [
+        position("AAPL-USDT-SWAP", "LONG", 70),
+        position("TTWO-USDT-SWAP", "SHORT", 30),
+    ]
+    short_trim = profit_reduce_exposure_decision(
+        positions, "TTWO-USDT-SWAP", "SHORT", 1
+    )
+    long_trim = profit_reduce_exposure_decision(
+        positions, "AAPL-USDT-SWAP", "LONG", 1
+    )
+    assert short_trim["allowed"] is False
+    assert long_trim["allowed"] is True
+
+
+def test_profit_reduce_does_not_accept_cross_factor_fake_hedge():
+    positions = [
+        position("AAPL-USDT-SWAP", "LONG", 30),
+        position("TTWO-USDT-SWAP", "SHORT", 10),
+        position("BTC-USDT-SWAP", "SHORT", 20),
+    ]
+    decision = profit_reduce_exposure_decision(
+        positions,
+        "TTWO-USDT-SWAP",
+        "SHORT",
+        1,
+        {"BTC-USDT-SWAP"},
+    )
+    assert decision["allowed"] is False
+    assert decision["risk_factor"] == "EQUITY"
+    assert "factor=" in decision["reason"]
+
+
+def test_profit_reduce_allows_single_sided_book_to_reduce_net_risk():
+    decision = profit_reduce_exposure_decision(
+        [position("BTC-USDT-SWAP", "LONG", 30)],
+        "BTC-USDT-SWAP",
+        "LONG",
+        1,
+        {"BTC-USDT-SWAP"},
+    )
+    assert decision["allowed"] is True
+
+
+def test_hard_stop_bypasses_v5_profit_reduce_gate(tmp_path):
+    manager = V5ExecutionManager(None, {}, {}, tmp_path)
+
+    class Strategy:
+        id = 401
+
+    decision = asyncio.run(manager._pre_reduce_callback(
+        strategy=Strategy(),
+        account=object(),
+        symbol="BTC-USDT-SWAP",
+        direction="LONG",
+        quantity=1,
+        reason="hard stop (price change 2.5%)",
+        params={},
+    ))
+    assert decision == {"allowed": True, "reason": "risk_exit_not_gated"}
+
+
+def test_profit_floor_and_trailing_share_one_peak_cycle():
+    state = TrailingPositionState()
+    consume_profit_exit_cycle(state, 0.80)
+    assert state.exit_taken is True
+    assert state.last_exit_peak_metric == 0.80
+    consume_profit_exit_cycle(state, 0.75)
+    assert state.last_exit_peak_metric == 0.80
 
 
 def test_exit_reentry_block_is_account_scoped_and_expires_next_slot(tmp_path):

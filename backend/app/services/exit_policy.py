@@ -126,6 +126,22 @@ def cap_trend_runner_reduce_quantity(
     return max(0.0, min(requested, max(0.0, position - core)))
 
 
+def consume_profit_exit_cycle(state, current_peak: float) -> None:
+    """Mark the shared trailing-profit cycle as consumed.
+
+    Trailing drawdown and the dynamic whole-trade profit floor are alternative
+    triggers for the same partial exit.  Whichever succeeds first consumes the
+    cycle; a sufficiently higher peak must rearm it before either can trim the
+    position again.
+    """
+    peak = max(0.0, float(current_peak or 0.0))
+    state.exit_taken = True
+    state.last_exit_peak_metric = max(
+        float(state.last_exit_peak_metric or 0.0),
+        peak,
+    )
+
+
 def resolve_runner_add_stop_price(direction: str, entry_price: float, stop_pct: float) -> float:
     """Return the adverse-price stop for a continuation add-on."""
     entry = max(0.0, float(entry_price))

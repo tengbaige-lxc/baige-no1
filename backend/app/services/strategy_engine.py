@@ -28,6 +28,7 @@ from app.services.trade_service import trade_service
 from app.services.exit_policy import (
     TrailingPositionState,
     cap_trend_runner_reduce_quantity,
+    consume_profit_exit_cycle,
     evaluate_extreme_volume_followthrough,
     filter_confirmed_klines,
     is_confirmed_third_sell_exit,
@@ -1505,7 +1506,12 @@ class StrategyEngine:
                     # *whole-trade* PnL.  This is a software exit on purpose: the exchange
                     # native order remains the full hard-stop backstop, while profit locks
                     # only trim the configured fraction instead of flattening the trend leg.
-                    if trailing_history and not state.profit_floor_taken and state.peak_total_pnl > 0:
+                    if (
+                        trailing_history
+                        and not state.exit_taken
+                        and not state.profit_floor_taken
+                        and state.peak_total_pnl > 0
+                    ):
                         lock_ratio = resolve_trailing_profit_lock_ratio(current_peak, ts_cfg)
                         # Profit floors must never use the approximate static contract table.
                         contract_value = await self._get_profit_lock_contract_value(symbol)
@@ -1564,6 +1570,7 @@ class StrategyEngine:
                                     params, okx_pos_side, reduced_symbols,
                                 )
                                 if reduced:
+                                    consume_profit_exit_cycle(state, current_peak)
                                     state.runner_add_quantity = max(
                                         0.0, state.runner_add_quantity - reduce_qty
                                     )
@@ -1609,8 +1616,7 @@ class StrategyEngine:
                                 reduced = False
                             if reduced:
                                 self._trailing_exit_hits.add(trailing_key)
-                                state.exit_taken = True
-                                state.last_exit_peak_metric = current_peak
+                                consume_profit_exit_cycle(state, current_peak)
                                 state.runner_add_quantity = max(
                                     0.0, state.runner_add_quantity - reduce_qty
                                 )
@@ -2457,6 +2463,49 @@ class StrategyEngine:
         quantity = max(round(quantity, 2), 0.01)
         position_direction = "LONG" if side == "SELL" else "SHORT"
         try:
+            pre_reduce_callback = getattr(self, "_pre_reduce_callback", None)
+            if pre_reduce_callback is not None:
+                decision = await pre_reduce_callback(
+                    strategy=strategy,
+                    account=config,
+                    symbol=symbol,
+                    direction=position_direction,
+                    quantity=quantity,
+                    reason=reason,
+                    params=params or {},
+                )
+                allowed = (
+                    bool(decision.get("allowed"))
+                    if isinstance(decision, dict)
+                    else bool(decision)
+                )
+                if not allowed:
+                    details = decision if isinstance(decision, dict) else {}
+                    block_reason = str(
+                        details.get("reason") or "portfolio exposure guard"
+                    )
+                    async with AsyncSessionLocal() as block_db:
+                        block_db.add(StrategyLog(
+                            strategy_id=strategy.id,
+                            user_id=strategy.user_id,
+                            exchange_config_id=config.id,
+                            symbol=symbol,
+                            signal="HOLD",
+                            price=price,
+                            quantity=quantity,
+                            reason=f"[profit reduce blocked] {block_reason}",
+                            details={
+                                "exit_reason": reason,
+                                "reduce_qty": quantity,
+                                "portfolio_guard": details,
+                            },
+                        ))
+                        await block_db.commit()
+                    print(
+                        f"profit reduce blocked [{symbol}] {quantity}: {block_reason}",
+                        flush=True,
+                    )
+                    return False
             request = ReducePositionRequest(
                 symbol=symbol,
                 direction=position_direction,
