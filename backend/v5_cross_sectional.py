@@ -527,6 +527,13 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
     stored_legs = [dict(leg) for leg in (
         (state.get("target_legs") or {}).get(pool) or [])
     ]
+    gate_pruned_frozen_longs = False
+    if not crypto_long_gate["allowed"]:
+        gated_legs = [
+            leg for leg in stored_legs if leg.get("direction") != "LONG"
+        ]
+        gate_pruned_frozen_longs = len(gated_legs) != len(stored_legs)
+        stored_legs = gated_legs
     last_slot = state.get("last_rebalance_slot")
     if not last_slot and state.get("last_rebalance_day"):
         last_slot = f"{state['last_rebalance_day']}T{rebalance_hours[0]:02d}"
@@ -540,6 +547,15 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
         "universe_method_version": int(config.get("universe_method_version", 1)),
         "universe": {**(state.get("universe") or {}), pool: universe},
     }
+    if gate_pruned_frozen_longs:
+        next_state["targets"] = {
+            **(state.get("targets") or {}),
+            pool: target,
+        }
+        next_state["target_legs"] = {
+            **(state.get("target_legs") or {}),
+            pool: stored_legs,
+        }
     if due and proposed_legs:
         legs = proposed_legs
         next_state["last_rebalance_day"] = slot_day
@@ -559,7 +575,11 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
     execution_enabled = bool(config.get("execution_enabled"))
     if not legs:
         status = "WAIT"
-        reason = "no_factor_neutral_cross_sectional_pair"
+        reason = (
+            "crypto_long_market_gate_blocked"
+            if pool == "crypto" and not crypto_long_gate["allowed"]
+            else "no_factor_neutral_cross_sectional_pair"
+        )
     elif due:
         status = "LIVE_REBALANCE" if execution_enabled else "SHADOW_REBALANCE"
         reason = "daily_rebalance_due"

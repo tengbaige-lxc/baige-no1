@@ -414,6 +414,53 @@ def test_crypto_long_market_gate_allows_longs_after_benchmark_confirmation():
     assert [leg for leg in plan["legs"] if leg["direction"] == "LONG"]
 
 
+def test_crypto_long_market_gate_prunes_a_frozen_unconfirmed_long_target():
+    rows = observations(["BTC-USDT-SWAP", "EARLY-LONG-USDT-SWAP"])
+    for row in rows:
+        row["score"] = 3.5 if row["direction"] == "LONG" else 0.0
+        row["trend_4h_aligned"] = True
+        row["structure_30m_aligned"] = True
+        row["adx_4h_strong"] = False
+        row["market"]["return_24h"] = 0.01
+    common = config(
+        execution_enabled=True,
+        factor_entry_gate_enabled=True,
+        directional_entry_score_min=3.0,
+        directional_entry_score_max=4.0,
+        minimum_directional_score_edge=2.0,
+        require_trend_4h_aligned=True,
+        require_structure_or_adx=True,
+        crypto_long_market_regime_benchmark="BTC-USDT-SWAP",
+        crypto_long_market_regime_require_positive_24h_return=True,
+    )
+    first = build_cross_sectional_shadow(
+        rows,
+        pool="crypto",
+        now_ms=NOW_MS,
+        config={**common, "crypto_long_market_regime_gate_enabled": False},
+    )
+    assert [leg for leg in first["legs"] if leg["direction"] == "LONG"]
+
+    for row in rows:
+        if row["symbol"] == "BTC-USDT-SWAP":
+            row["trend_4h_aligned"] = False
+            row["market"]["return_24h"] = -0.01
+    blocked = build_cross_sectional_shadow(
+        rows,
+        pool="crypto",
+        now_ms=NOW_MS,
+        state=first["state"],
+        config={**common, "crypto_long_market_regime_gate_enabled": True},
+    )
+    assert blocked["reason"] == "crypto_long_market_gate_blocked"
+    assert not [leg for leg in blocked["legs"] if leg["direction"] == "LONG"]
+    assert not [
+        leg
+        for leg in blocked["state"]["target_legs"]["crypto"]
+        if leg["direction"] == "LONG"
+    ]
+
+
 def test_inverse_contract_is_not_counted_as_an_economic_long():
     rows = observations([
         "AAA-USDT-SWAP", "BBB-USDT-SWAP", "CCC-USDT-SWAP",
