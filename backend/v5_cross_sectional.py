@@ -74,6 +74,13 @@ def _liquidity_limit(config, pool):
     return max(2, int(value))
 
 
+def _same_side_correlation_limit(config, pool):
+    value = config.get("max_same_side_correlation", 0.85)
+    if isinstance(value, dict):
+        value = value.get(pool, value.get("default", 0.85))
+    return max(-1.0, min(1.0, float(value)))
+
+
 def _risk_factor(symbol, pool):
     if pool == "crypto":
         return "CRYPTO"
@@ -216,6 +223,46 @@ def _directional_entry_allowed(row, direction, config):
     ):
         return False
     return True
+
+
+def _crypto_long_market_gate(rows, pool, config):
+    """Fail closed when the crypto benchmark does not support long exposure."""
+    enabled = bool(config.get("crypto_long_market_regime_gate_enabled", False))
+    if pool != "crypto" or not enabled:
+        return {"enabled": enabled, "allowed": True, "reason": "not_applicable"}
+    benchmark = str(
+        config.get("crypto_long_market_regime_benchmark", "BTC-USDT-SWAP")
+    ).strip().upper()
+    row = next((item for item in rows if item.get("symbol") == benchmark), None)
+    if row is None:
+        return {
+            "enabled": True,
+            "allowed": False,
+            "benchmark": benchmark,
+            "reason": "benchmark_missing",
+        }
+    signal = (row.get("signals") or {}).get("LONG") or {}
+    require_positive_return = bool(
+        config.get("crypto_long_market_regime_require_positive_24h_return", True)
+    )
+    return_24h = float(row.get("return_24h") or 0)
+    trend_aligned = bool(signal.get("trend_4h_aligned"))
+    confirmation = bool(
+        signal.get("structure_30m_aligned") or signal.get("adx_4h_strong")
+    )
+    allowed = trend_aligned and confirmation and (
+        return_24h >= 0 if require_positive_return else True
+    )
+    return {
+        "enabled": True,
+        "allowed": allowed,
+        "benchmark": benchmark,
+        "trend_4h_aligned": trend_aligned,
+        "structure_or_adx": confirmation,
+        "return_24h": return_24h,
+        "require_positive_24h_return": require_positive_return,
+        "reason": "benchmark_confirms" if allowed else "benchmark_does_not_confirm",
+    }
 
 
 def _select_factor_pairs(
@@ -453,7 +500,8 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
     rotation_rankings = _rotation_rankings(all_ranked, config)
     max_per_side = max(1, int(config.get("max_legs_per_side", 4)))
     minimum_alpha = float(config.get("minimum_alpha_spread", 1.0))
-    maximum_correlation = float(config.get("max_same_side_correlation", 0.85))
+    maximum_correlation = _same_side_correlation_limit(config, pool)
+    crypto_long_gate = _crypto_long_market_gate(paired, pool, config)
     if config.get("factor_entry_gate_enabled"):
         selected = _select_directional_legs(
             ranked,
@@ -462,6 +510,8 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
             maximum_correlation,
             config,
         )
+        if not crypto_long_gate["allowed"]:
+            selected["LONG"] = []
         proposed_legs = _directional_weights(selected, config)
     else:
         selected = _select_factor_pairs(
@@ -539,6 +589,7 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
         # Rankings are consumed only when a new slot is due. Omitting them
         # from five-minute hold snapshots keeps scan history bounded.
         "rotation_rankings": rotation_rankings if due else [],
+        "direction_gates": {"LONG": crypto_long_gate},
         "estimated_one_way_turnover": turnover,
         "estimated_cost_fraction": turnover * cost_bps / 10000,
         "state": next_state,

@@ -24,12 +24,17 @@ from app.services.moer_structure import (
     evaluate_moer_long_structure,
     evaluate_moer_short_structure,
 )
+from app.services.exit_policy import (
+    resolve_trailing_callback,
+    resolve_trendline_break_signal,
+)
 from app.services.signal_quality import entry_timing
 from app.services.trend_v3 import Action, Direction, TrendContext, TrendV3
 from v5_cross_sectional import build_cross_sectional_shadow
 from v5_execution import (
     cross_sectional_selected_by_pool,
     dynamic_exposure_plan,
+    execution_params,
     select_legs,
 )
 from v5_portfolio import market_features, risk_factor_for_symbol
@@ -364,6 +369,10 @@ def simulate(cache, books, config, end_ms):
     prior_weights = {}
     cost_rate = float(config["cross_sectional_shadow"].get("cost_bps_per_side", 3)) / 10000
     stop_pct = float(config["hard_stop_price_pct"])
+    exit_factors = execution_params(config, [])["exit_factors"]
+    trailing_config = exit_factors["trailing_stop"]
+    trendline_config = exit_factors["trendline_break"]
+    leverage = float(config["requested_leverage"])
     for offset, book in enumerate(books):
         start = int(book["ts"])
         finish = int(books[offset + 1]["ts"]) if offset + 1 < len(books) else end_ms
@@ -390,7 +399,11 @@ def simulate(cache, books, config, end_ms):
         positions = []
         bars_by_ts = defaultdict(dict)
         for leg in book["legs"]:
-            rows = cache.rows(leg["symbol"], start - FIVE_MINUTES_MS, finish)
+            rows = cache.rows(
+                leg["symbol"],
+                start - 12 * THIRTY_MINUTES_MS,
+                finish,
+            )
             entry_rows = [row for row in rows if int(row[0]) + FIVE_MINUTES_MS <= start]
             if not entry_rows:
                 continue
@@ -401,8 +414,27 @@ def simulate(cache, books, config, end_ms):
                 "active": True,
                 "last": entry,
                 "realized": 0.0,
+                "remaining": 1.0,
+                "peak_upl_ratio": 0.0,
+                "trailing_trimmed": False,
                 "opened_at": start,
             }
+            structure_breaks = set()
+            rows_30m = resample_5m(rows, THIRTY_MINUTES_MS)
+            for index, candle in enumerate(rows_30m):
+                close_at = int(candle[0]) + THIRTY_MINUTES_MS
+                if not start < close_at <= finish:
+                    continue
+                window = rows_30m[max(0, index - 19):index + 1]
+                if resolve_trendline_break_signal(
+                    window,
+                    leg["direction"] == "LONG",
+                    float(trendline_config["break_pct"]),
+                    float(candle[4]),
+                    require_closed_candle=True,
+                ):
+                    structure_breaks.add(close_at)
+            position["structure_breaks"] = structure_breaks
             positions.append(position)
             for row in rows:
                 close_at = int(row[0]) + FIVE_MINUTES_MS
@@ -415,6 +447,7 @@ def simulate(cache, books, config, end_ms):
                     floating += position["realized"]
                     continue
                 row = bars_by_ts[stamp].get(position["symbol"])
+                trimmed_now = False
                 if row is not None:
                     position["last"] = float(row[4])
                     stopped = (
@@ -426,8 +459,14 @@ def simulate(cache, books, config, end_ms):
                     )
                     if stopped:
                         position["active"] = False
-                        position["realized"] = (
-                            -stop_pct * float(position["notional_fraction"])
+                        position["realized"] += (
+                            -stop_pct
+                            * float(position["notional_fraction"])
+                            * float(position["remaining"])
+                        )
+                        position["remaining"] = 0.0
+                        effective_return = position["realized"] / float(
+                            position["notional_fraction"]
                         )
                         trades.append({
                             "symbol": position["symbol"],
@@ -435,12 +474,76 @@ def simulate(cache, books, config, end_ms):
                             "direction": position["direction"],
                             "opened_at": position["opened_at"],
                             "closed_at": stamp,
-                            "return_pct": -stop_pct * 100,
-                            "exit": "hard_stop",
+                            "return_pct": effective_return * 100,
+                            "exit": "hard_stop_after_trailing" if position["trailing_trimmed"] else "hard_stop",
+                            "trailing_trimmed": position["trailing_trimmed"],
                         })
+                    else:
+                        current_return = direction_return(
+                            position["direction"],
+                            position["entry"],
+                            position["last"],
+                        )
+                        current_upl = current_return * leverage
+                        position["peak_upl_ratio"] = max(
+                            float(position["peak_upl_ratio"]), current_upl
+                        )
+                        peak_upl = float(position["peak_upl_ratio"])
+                        callback = resolve_trailing_callback(
+                            peak_upl, trailing_config
+                        )
+                        drawdown = (
+                            (peak_upl - current_upl) / peak_upl
+                            if peak_upl > 0 else 0.0
+                        )
+                        if (
+                            not position["trailing_trimmed"]
+                            and peak_upl >= float(trailing_config["activation"])
+                            and drawdown >= callback
+                        ):
+                            trim = min(
+                                float(position["remaining"]),
+                                float(trailing_config["reduce_ratio"]),
+                            )
+                            position["realized"] += (
+                                float(position["notional_fraction"])
+                                * trim
+                                * current_return
+                            )
+                            position["remaining"] -= trim
+                            position["trailing_trimmed"] = True
+                            trimmed_now = True
+                        if (
+                            not trimmed_now
+                            and stamp in position["structure_breaks"]
+                        ):
+                            position["realized"] += (
+                                float(position["notional_fraction"])
+                                * float(position["remaining"])
+                                * current_return
+                            )
+                            position["remaining"] = 0.0
+                            position["active"] = False
+                            effective_return = position["realized"] / float(
+                                position["notional_fraction"]
+                            )
+                            trades.append({
+                                "symbol": position["symbol"],
+                                "pool": position["pool"],
+                                "direction": position["direction"],
+                                "opened_at": position["opened_at"],
+                                "closed_at": stamp,
+                                "return_pct": effective_return * 100,
+                                "exit": "trendline_break",
+                                "trailing_trimmed": position["trailing_trimmed"],
+                            })
                 if position["active"]:
-                    floating += float(position["notional_fraction"]) * direction_return(
-                        position["direction"], position["entry"], position["last"]
+                    floating += position["realized"] + (
+                        float(position["notional_fraction"])
+                        * float(position["remaining"])
+                        * direction_return(
+                            position["direction"], position["entry"], position["last"]
+                        )
                     )
                 else:
                     floating += position["realized"]
@@ -459,17 +562,27 @@ def simulate(cache, books, config, end_ms):
                 result = direction_return(
                     position["direction"], position["entry"], position["last"]
                 )
+                effective_return = (
+                    position["realized"]
+                    + float(position["notional_fraction"])
+                    * float(position["remaining"])
+                    * result
+                ) / float(position["notional_fraction"])
                 trades.append({
                     "symbol": position["symbol"],
                     "pool": position["pool"],
                     "direction": position["direction"],
                     "opened_at": position["opened_at"],
                     "closed_at": finish,
-                    "return_pct": result * 100,
+                    "return_pct": effective_return * 100,
                     "exit": "rebalance",
+                    "trailing_trimmed": position["trailing_trimmed"],
                 })
         prior_weights = {
-            (position["symbol"], position["direction"]): float(position["notional_fraction"])
+            (position["symbol"], position["direction"]): (
+                float(position["notional_fraction"])
+                * float(position["remaining"])
+            )
             for position in positions if position["active"]
         }
     return {
@@ -496,7 +609,15 @@ def summarize_trades(trades):
             "count": len(values),
             "win_rate_pct": round(100 * sum(value > 0 for value in returns) / len(values), 2),
             "average_price_return_pct": round(mean(returns), 4),
-            "hard_stop_count": sum(item["exit"] == "hard_stop" for item in values),
+            "hard_stop_count": sum(
+                str(item["exit"]).startswith("hard_stop") for item in values
+            ),
+            "trendline_break_count": sum(
+                item["exit"] == "trendline_break" for item in values
+            ),
+            "trailing_trim_count": sum(
+                bool(item.get("trailing_trimmed")) for item in values
+            ),
         }
     return output
 
@@ -629,7 +750,7 @@ def run(args):
             "limitations": [
                 "Uses the current universe, so delisted/removed instruments can create survivorship bias.",
                 "Historical OI, funding, macro/fundamental overlays and divergence snapshots are neutral/unavailable.",
-                "Uses 5m OHLC fixed-stop execution and scheduled rebalances; it does not reconstruct order-book slippage, funding, native-stop latency, trailing partial exits or every live rotation guard.",
+                "Uses 5m OHLC execution with fixed stops, production-aligned trailing partial exits, closed-30m trendline exits and scheduled rebalances; it does not reconstruct order-book slippage, funding, native-stop latency, the dynamic profit floor or every live rotation guard.",
                 "Estimated quote volume is 5m base volume times close because the old cache stores base volume only.",
                 "Results are research evidence, not expected or guaranteed live returns.",
             ],

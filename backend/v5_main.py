@@ -37,7 +37,7 @@ status = {'mode': 'factor_aware_shadow', 'execution_enabled': False,
           'portfolio_mode': 'factor_isolated_dynamic_directional_shadow',
           'strategy_mandate': 'cross_sectional_long_short_transition',
           'cross_sectional_shadow_by_pool': {},
-          'sizing_status': '20x_preview_factor_caps_60_70_3pct_leg_risk',
+          'sizing_status': '20x_preview_factor_caps_60_70_configured_leg_risk',
           'rotation_status': 'shadow_proposals_only_no_orders',
           'position_limit_status': 'combined_crypto_tradfi_max_14'}
 
@@ -488,6 +488,7 @@ async def lifespan(app):
     config = json.loads((ROOT / 'config.json').read_text())
     universes = load_universes(config)
     execution_enabled = bool(config.get('execution_enabled'))
+    leg_risk_label = f"{float(config.get('max_loss_per_leg_equity_fraction', 0.03)) * 100:g}pct".replace('.', '_')
     cross_sectional_execution_enabled = execution_enabled and bool(
         (config.get('cross_sectional_shadow') or {}).get('execution_enabled'))
     new_entries_enabled = execution_enabled and int(
@@ -507,9 +508,9 @@ async def lifespan(app):
                           if cross_sectional_execution_enabled
                           else 'cross_sectional_long_short_transition'),
         cross_sectional_execution_enabled=cross_sectional_execution_enabled,
-        sizing_status=('20x_live_factor_caps_60_70_3pct_leg_risk'
+        sizing_status=(f'20x_live_factor_caps_60_70_{leg_risk_label}_leg_risk'
                        if execution_enabled
-                       else '20x_preview_factor_caps_60_70_3pct_leg_risk'),
+                       else f'20x_preview_factor_caps_60_70_{leg_risk_label}_leg_risk'),
         rotation_status=('scheduled_alpha_hedge_dead_capital_rotation_live'
                          if cross_sectional_execution_enabled else
                          'live_ledger_owned_positions_only' if execution_enabled

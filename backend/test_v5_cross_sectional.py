@@ -335,6 +335,85 @@ def test_factor_gate_keeps_a_qualified_single_side_without_forcing_a_hedge():
     assert math.isclose(plan["net_weight"], 0.30)
 
 
+def test_crypto_long_market_gate_blocks_longs_but_keeps_qualified_shorts():
+    rows = observations([
+        "BTC-USDT-SWAP",
+        "EARLY-LONG-USDT-SWAP",
+        "EARLY-SHORT-USDT-SWAP",
+    ])
+    scores = {
+        "BTC-USDT-SWAP": {"LONG": 3.5, "SHORT": 0.0},
+        "EARLY-LONG-USDT-SWAP": {"LONG": 3.5, "SHORT": 0.0},
+        "EARLY-SHORT-USDT-SWAP": {"LONG": 0.0, "SHORT": 3.5},
+    }
+    for row in rows:
+        row["score"] = scores[row["symbol"]][row["direction"]]
+        row["trend_4h_aligned"] = row["symbol"] != "BTC-USDT-SWAP"
+        row["structure_30m_aligned"] = True
+        row["adx_4h_strong"] = False
+        if row["symbol"] == "BTC-USDT-SWAP":
+            row["market"]["return_24h"] = -0.01
+    plan = build_cross_sectional_shadow(
+        rows,
+        pool="crypto",
+        now_ms=NOW_MS,
+        config=config(
+            execution_enabled=True,
+            factor_entry_gate_enabled=True,
+            directional_entry_score_min=3.0,
+            directional_entry_score_max=4.0,
+            minimum_directional_score_edge=2.0,
+            require_trend_4h_aligned=True,
+            require_structure_or_adx=True,
+            crypto_long_market_regime_gate_enabled=True,
+            crypto_long_market_regime_benchmark="BTC-USDT-SWAP",
+            crypto_long_market_regime_require_positive_24h_return=True,
+        ),
+    )
+    assert plan["direction_gates"]["LONG"]["allowed"] is False
+    assert not [leg for leg in plan["legs"] if leg["direction"] == "LONG"]
+    assert [leg for leg in plan["legs"] if leg["direction"] == "SHORT"]
+
+
+def test_crypto_long_market_gate_allows_longs_after_benchmark_confirmation():
+    rows = observations([
+        "BTC-USDT-SWAP",
+        "EARLY-LONG-USDT-SWAP",
+        "EARLY-SHORT-USDT-SWAP",
+    ])
+    scores = {
+        "BTC-USDT-SWAP": {"LONG": 3.5, "SHORT": 0.0},
+        "EARLY-LONG-USDT-SWAP": {"LONG": 3.5, "SHORT": 0.0},
+        "EARLY-SHORT-USDT-SWAP": {"LONG": 0.0, "SHORT": 3.5},
+    }
+    for row in rows:
+        row["score"] = scores[row["symbol"]][row["direction"]]
+        row["trend_4h_aligned"] = True
+        row["structure_30m_aligned"] = True
+        row["adx_4h_strong"] = False
+        if row["symbol"] == "BTC-USDT-SWAP":
+            row["market"]["return_24h"] = 0.01
+    plan = build_cross_sectional_shadow(
+        rows,
+        pool="crypto",
+        now_ms=NOW_MS,
+        config=config(
+            execution_enabled=True,
+            factor_entry_gate_enabled=True,
+            directional_entry_score_min=3.0,
+            directional_entry_score_max=4.0,
+            minimum_directional_score_edge=2.0,
+            require_trend_4h_aligned=True,
+            require_structure_or_adx=True,
+            crypto_long_market_regime_gate_enabled=True,
+            crypto_long_market_regime_benchmark="BTC-USDT-SWAP",
+            crypto_long_market_regime_require_positive_24h_return=True,
+        ),
+    )
+    assert plan["direction_gates"]["LONG"]["allowed"] is True
+    assert [leg for leg in plan["legs"] if leg["direction"] == "LONG"]
+
+
 def test_inverse_contract_is_not_counted_as_an_economic_long():
     rows = observations([
         "AAA-USDT-SWAP", "BBB-USDT-SWAP", "CCC-USDT-SWAP",

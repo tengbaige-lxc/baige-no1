@@ -76,7 +76,7 @@
   "minimum_leg_margin_usdt": 2.0,
   "hard_stop_price_pct": 0.025,
   "native_stop_price_pct": 0.03,
-  "max_loss_per_leg_equity_fraction": 0.03,
+  "max_loss_per_leg_equity_fraction": 0.015,
   "params": {
     "trend_v3_enabled": true,
     "trend_v3_entry_position_factor": 1.0,
@@ -141,9 +141,16 @@
     "require_trend_4h_aligned": true,
     "require_structure_or_adx": true,
     "single_side_target_weight": 0.30,
-    "max_same_side_correlation": 0.85,
+    "max_same_side_correlation": {
+      "crypto": 0.7,
+      "tradfi": 0.8,
+      "default": 0.8
+    },
+    "crypto_long_market_regime_gate_enabled": true,
+    "crypto_long_market_regime_benchmark": "BTC-USDT-SWAP",
+    "crypto_long_market_regime_require_positive_24h_return": true,
     "rebalance_utc_hours": {
-      "crypto": [0, 12],
+      "crypto": [0],
       "tradfi": [0]
     },
     "cost_bps_per_side": 3.0,
