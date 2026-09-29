@@ -6,10 +6,18 @@ from datetime import datetime
 
 # Exchange Config
 class ExchangeConfigBase(BaseModel):
-    name: str = "币安主账户"
-    exchange: str = "binance"
-    is_testnet: bool = True
+    name: str = "交易账户"
+    exchange: str = "okx"
+    is_testnet: bool = False
     is_active: bool = True
+
+    @field_validator("exchange")
+    @classmethod
+    def validate_exchange(cls, value):
+        exchange = (value or "").strip().lower()
+        if exchange not in {"okx", "binance"}:
+            raise ValueError("交易所只支持 okx 或 binance")
+        return exchange
 
 
 class ExchangeConfigCreate(ExchangeConfigBase):
@@ -22,6 +30,7 @@ class ExchangeConfigUpdate(BaseModel):
     name: Optional[str] = None
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
+    api_passphrase: Optional[str] = None
     is_testnet: Optional[bool] = None
     is_active: Optional[bool] = None
 

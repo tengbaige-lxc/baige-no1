@@ -10,6 +10,27 @@
 
 ## [Unreleased]
 
+## [5.8.0] - 2026-09-28
+
+### Added
+
+- 新增 Binance USDⓈ-M Futures HMAC 客户端，使用 `/fapi/v3/account`、`/fapi/v3/balance`、`/fapi/v3/positionRisk` 与持仓模式接口。
+- 账户管理接口支持 `okx` 与 `binance` 两类配置，并统一输出权益、可用资金、多空持仓、名义金额、保证金与浮动盈亏。
+- Binance 凭据新增保存前验签；同时读取账户与双向/单向持仓模式，任一失败均拒绝保存。
+- 新增签名、错误关闭、持仓模式和账户汇总映射回归测试。
+
+### Changed
+
+- 删除旧的 Binance 现货 `python-binance` 包装器，改为项目现有 `httpx` 直接访问 USDⓈ-M Futures API。
+- 交易所配置默认值恢复为 `okx`，避免旧前端未提交 `exchange` 字段时改变既有行为。
+- 更新交易所密钥或测试网选项时先重新验签，验证成功后才提交。
+
+### Safety
+
+- 本版本只接入 Binance 账户验证和只读可见性；白鸽五号订单、减仓、止损和账本仍只通过 OKX 执行。
+- Binance 账户汇总明确返回 `execution_supported=false`，不会因添加账户而自动下单。
+- 不修改数据库结构、不新增账户、不迁移持仓、不触发任何订单。
+
 ## [5.7.0] - 2026-09-28
 
 ### Added
