@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.db.base import AsyncSessionLocal
 from app.models.exchange_config import ExchangeConfig
+from app.models.trade_record import TradeRecord
 from app.models.trading_strategy import TradingStrategy
 from app.models.user import User
 from app.services.okx_client import decrypt_text, okx_manager
@@ -194,8 +195,14 @@ def cross_sectional_selected_by_pool(
     minimum_score: float,
     *,
     require_factor_gate: bool = False,
+    directional_minimum_score: float | None = None,
 ) -> dict:
     """Validate cross-sectional targets and adapt them to the live executor."""
+    directional_threshold = (
+        float(directional_minimum_score)
+        if directional_minimum_score is not None
+        else (0.0 if require_factor_gate else float(minimum_score))
+    )
     selected_by_pool = {}
     for pool, plan in (plans or {}).items():
         selected = {"LONG": [], "SHORT": []}
@@ -228,17 +235,25 @@ def cross_sectional_selected_by_pool(
             directional_score = leg.get("directional_score")
             if require_factor_gate:
                 score = float(directional_score or 0)
+                if score < directional_threshold:
+                    continue
+                score_scale = "cross_sectional_directional"
+                entry_minimum_score = directional_threshold
             else:
                 score = max(
                     float(minimum_score),
                     float(minimum_score) + min(2.0, pair_spread / 2.0),
                 )
+                score_scale = "legacy_trend"
+                entry_minimum_score = float(minimum_score)
             selected[direction].append({
                 **leg,
                 "symbol": symbol,
                 "pool": pool,
                 "direction": direction,
                 "score": score,
+                "score_scale": score_scale,
+                "entry_minimum_score": entry_minimum_score,
                 "quality": pair_spread,
                 "risk_direction": economic_direction_for_symbol(symbol, direction),
                 "risk_factor": leg.get("risk_factor") or risk_factor_for_symbol(
@@ -523,12 +538,20 @@ def profit_reduce_exposure_decision(
         factor_before, factor_after,
         normal_max_side_share, factor_max_side_share,
     )
-    allowed = account_allowed and factor_allowed
+    exposure_recovery_required = not (account_allowed and factor_allowed)
     return {
-        "allowed": allowed,
+        # A reduce-only profit exit always lowers gross and instrument risk.
+        # Directional/factor imbalance is repaired by the entry allocator; it
+        # must not trap a position after its exit condition has fired.
+        "allowed": True,
         "reason": (
-            "portfolio_profit_reduce_allowed" if allowed
-            else f"exposure_guard account={account_reason} factor={factor_reason}"
+            "portfolio_profit_reduce_allowed"
+            if not exposure_recovery_required
+            else "portfolio_profit_reduce_allowed_rebalance_required"
+        ),
+        "exposure_recovery_required": exposure_recovery_required,
+        "exposure_assessment": (
+            f"account={account_reason} factor={factor_reason}"
         ),
         "risk_direction": target["risk_direction"],
         "risk_factor": target["risk_factor"],
@@ -553,6 +576,7 @@ class V5ExecutionManager:
         self.exit_reentry_blocks = dict(self._state.get("exit_reentry_blocks") or {})
         self.active_target_slots = dict(self._state.get("active_target_slots") or {})
         self.rotation_dead_counts = dict(self._state.get("rotation_dead_counts") or {})
+        self._missing_v5_ledger_since: dict[tuple[int, str, str], float] = {}
         if self.engine is not None:
             self.engine._pre_reduce_callback = self._pre_reduce_callback
             self.engine._post_reduce_callback = self._post_reduce_callback
@@ -578,6 +602,68 @@ class V5ExecutionManager:
     def _save_last_processed(self, value: str) -> None:
         self.last_processed = value
         self._save_state()
+
+    async def _close_stale_v5_ledger_if_due(self, accounts: list[ExchangeConfig]) -> None:
+        """Close missing V5-owned rows without importing external positions."""
+        now = time.monotonic()
+        if now - getattr(self, "_last_v5_ledger_audit", 0) < 60:
+            return
+        self._last_v5_ledger_audit = now
+        grace_seconds = max(
+            120.0, float(self.config.get("ledger_missing_grace_seconds", 120))
+        )
+        strategies = await self._strategies()
+        markers = {
+            self.engine._format_strategy_marker(strategy)
+            for strategy in strategies.values()
+        }
+        if not markers:
+            return
+        closed = 0
+        observed_open_keys = set()
+        async with AsyncSessionLocal() as db:
+            for account in accounts:
+                live_positions = await self._live_positions(account)
+                live_keys = {
+                    key for row in live_positions
+                    if (key := self._position_key(row)) is not None
+                }
+                result = await db.execute(select(TradeRecord).where(
+                    TradeRecord.exchange_config_id == account.id,
+                    TradeRecord.is_closed == False,
+                    TradeRecord.strategy_tag.in_(markers),
+                ))
+                for record in result.scalars().all():
+                    position_key = (
+                        str(record.symbol or "").upper(),
+                        str(record.direction or "").upper(),
+                    )
+                    cache_key = (account.id, *position_key)
+                    observed_open_keys.add(cache_key)
+                    if position_key in live_keys:
+                        self._missing_v5_ledger_since.pop(cache_key, None)
+                        continue
+                    first_seen = self._missing_v5_ledger_since.get(cache_key)
+                    if first_seen is None:
+                        self._missing_v5_ledger_since[cache_key] = now
+                        continue
+                    if now - first_seen < grace_seconds:
+                        continue
+                    record.is_closed = True
+                    record.updated_at = datetime.now(timezone.utc)
+                    record.notes = (
+                        (record.notes or "")
+                        + " | V5账本对账关闭: 交易所连续观察无该持仓，PnL未核算"
+                    )
+                    self._missing_v5_ledger_since.pop(cache_key, None)
+                    closed += 1
+            for cache_key in list(self._missing_v5_ledger_since):
+                if cache_key not in observed_open_keys:
+                    self._missing_v5_ledger_since.pop(cache_key, None)
+            if closed:
+                await db.commit()
+        if closed:
+            print(f"v5_stale_ledger_closed count={closed}", flush=True)
 
     @staticmethod
     def _rotation_key(account_id: int, symbol: str, direction: str) -> str:
@@ -732,7 +818,7 @@ class V5ExecutionManager:
         if not is_portfolio_profit_reduce_reason(reason):
             return {"allowed": True, "reason": "risk_exit_not_gated"}
         positions = await self._live_positions(account)
-        return profit_reduce_exposure_decision(
+        decision = profit_reduce_exposure_decision(
             positions,
             symbol,
             direction,
@@ -748,6 +834,14 @@ class V5ExecutionManager:
                 self.config.get("max_factor_side_risk_share", 0.70)
             ),
         )
+        if decision.get("allowed"):
+            return decision
+        return {
+            **decision,
+            "allowed": True,
+            "reason": f"profit_reduce_fail_open: {decision.get('reason', 'unknown')}",
+            "exposure_recovery_required": True,
+        }
 
     async def bootstrap(self) -> None:
         async with AsyncSessionLocal() as db:
@@ -1239,6 +1333,12 @@ class V5ExecutionManager:
 
     async def _open_leg(self, strategy, account, leg: dict, margin: float) -> bool:
         symbol, direction = leg["symbol"], leg["direction"]
+        score = float(leg.get("score") or 0)
+        entry_minimum_score = float(
+            leg.get("entry_minimum_score", self.config.get("minimum_score", 0)) or 0
+        )
+        if score < entry_minimum_score:
+            return False
         ticker = await okx_manager.get_ticker(symbol)
         price = float(ticker.get("last") or 0)
         if not math.isfinite(price) or price <= 0:
@@ -1248,7 +1348,9 @@ class V5ExecutionManager:
             return False
         self.engine._pending_trade_quantity = quantity
         self.engine._pending_trade_context = {
-            "entry_score": float(leg["score"]),
+            "entry_score": score,
+            "entry_minimum_score": entry_minimum_score,
+            "entry_score_scale": str(leg.get("score_scale") or "legacy_trend"),
             "leverage": leverage,
             "v5_portfolio_entry": True,
         }
@@ -1391,6 +1493,7 @@ class V5ExecutionManager:
             factor: sum(margins.values())
             for factor, margins in used_by_factor_side.items()
         }
+        margin_blocks = []
         for leg in legs:
             contract_side = leg["direction"]
             side = leg.get("risk_direction") or economic_direction_for_symbol(
@@ -1411,6 +1514,12 @@ class V5ExecutionManager:
                 factor_remaining,
             )
             if margin < float(self.config["minimum_leg_margin_usdt"]):
+                margin_blocks.append({
+                    "symbol": leg["symbol"],
+                    "calculated_margin": round(margin, 4),
+                    "minimum_margin": float(self.config["minimum_leg_margin_usdt"]),
+                    "risk_cap": round(per_leg_margin_cap, 4),
+                })
                 continue
             strategy = strategies[(leg["pool"], contract_side)]
             if not await self._open_leg(strategy, account, leg, margin):
@@ -1422,6 +1531,11 @@ class V5ExecutionManager:
             used_by_factor[factor] = used_by_factor.get(factor, 0.0) + margin
             remaining_margin -= margin
         return {"status": "OPENED" if opened else "WAIT", "opened": opened,
+                "reason": (None if opened else (
+                    "leg_margin_below_minimum_after_risk_caps"
+                    if margin_blocks else "no_leg_opened"
+                )),
+                "margin_blocks": margin_blocks,
                 "correlation_blocks": correlation_blocks,
                 "side_margin_share": {key: round(value, 4)
                                       for key, value in side_share.items()},
@@ -1483,13 +1597,15 @@ class V5ExecutionManager:
             for account in await self._accounts():
                 self._exit_reentry_blocked_keys(account.id)
             self._save_state()
+        cross_config = self.config.get("cross_sectional_shadow") or {}
         selected = cross_sectional_selected_by_pool(
             plans,
             float(self.config.get("minimum_score", 6.5)),
             require_factor_gate=bool(
-                (self.config.get("cross_sectional_shadow") or {}).get(
-                    "factor_entry_gate_enabled"
-                )
+                cross_config.get("factor_entry_gate_enabled")
+            ),
+            directional_minimum_score=float(
+                cross_config.get("directional_entry_score_min", 3.0)
             ),
         )
         rotation = None
@@ -1530,6 +1646,10 @@ class V5ExecutionManager:
                                      for account in accounts]
                             await self.engine._process_exit_checks(
                                 db, [account for account in fresh if account is not None])
+                    # Audit after exits so exchange latency cannot delay hard
+                    # stops. Only V5-owned stale rows may be closed; external
+                    # positions are never imported into V5 ownership.
+                    await self._close_stale_v5_ledger_if_due(accounts)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

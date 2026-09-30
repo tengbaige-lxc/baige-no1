@@ -135,6 +135,7 @@
     "minimum_alpha_spread": 1.0,
     "momentum_weight": 0.5,
     "factor_entry_gate_enabled": true,
+    "execution_score_scale": "cross_sectional_directional",
     "directional_entry_score_min": 3.0,
     "directional_entry_score_max": 4.0,
     "minimum_directional_score_edge": 2.0,

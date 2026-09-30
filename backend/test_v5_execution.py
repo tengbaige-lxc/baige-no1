@@ -122,9 +122,27 @@ def test_cross_sectional_live_adapter_preserves_verified_directional_score():
         {"crypto": {"executable": True, "legs": legs}},
         6.5,
         require_factor_gate=True,
+        directional_minimum_score=3.0,
     )
     assert selected["crypto"]["LONG"][0]["score"] == 3.5
     assert selected["crypto"]["SHORT"][0]["score"] == 3.0
+    assert selected["crypto"]["LONG"][0]["score_scale"] == \
+        "cross_sectional_directional"
+    assert selected["crypto"]["SHORT"][0]["entry_minimum_score"] == 3.0
+
+
+def test_cross_sectional_live_adapter_rejects_directional_score_below_own_scale():
+    selected = cross_sectional_selected_by_pool(
+        {"crypto": {"executable": True, "legs": [
+            {"symbol": "BTC-USDT-SWAP", "direction": "LONG",
+             "notional_weight": .3, "pair_spread": 4.0,
+             "directional_score": 2.5, "factor_gate_passed": True},
+        ]}},
+        6.5,
+        require_factor_gate=True,
+        directional_minimum_score=3.0,
+    )
+    assert selected["crypto"] == {"LONG": [], "SHORT": []}
 
 
 def test_cross_sectional_live_adapter_rejects_unverified_legacy_target():
@@ -418,7 +436,7 @@ def test_profit_reduce_reason_classifier_excludes_risk_exits():
     assert not is_portfolio_profit_reduce_reason("trendline_break 30m close")
 
 
-def test_profit_reduce_blocks_scarce_hedge_and_allows_dominant_side_trim():
+def test_profit_reduce_allows_exit_and_flags_exposure_recovery():
     positions = [
         position("AAPL-USDT-SWAP", "LONG", 70),
         position("TTWO-USDT-SWAP", "SHORT", 30),
@@ -429,11 +447,13 @@ def test_profit_reduce_blocks_scarce_hedge_and_allows_dominant_side_trim():
     long_trim = profit_reduce_exposure_decision(
         positions, "AAPL-USDT-SWAP", "LONG", 1
     )
-    assert short_trim["allowed"] is False
+    assert short_trim["allowed"] is True
+    assert short_trim["exposure_recovery_required"] is True
     assert long_trim["allowed"] is True
+    assert long_trim["exposure_recovery_required"] is False
 
 
-def test_profit_reduce_does_not_accept_cross_factor_fake_hedge():
+def test_profit_reduce_marks_cross_factor_fake_hedge_for_recovery():
     positions = [
         position("AAPL-USDT-SWAP", "LONG", 30),
         position("TTWO-USDT-SWAP", "SHORT", 10),
@@ -446,9 +466,10 @@ def test_profit_reduce_does_not_accept_cross_factor_fake_hedge():
         1,
         {"BTC-USDT-SWAP"},
     )
-    assert decision["allowed"] is False
+    assert decision["allowed"] is True
+    assert decision["exposure_recovery_required"] is True
     assert decision["risk_factor"] == "EQUITY"
-    assert "factor=" in decision["reason"]
+    assert "factor=" in decision["exposure_assessment"]
 
 
 def test_profit_reduce_allows_single_sided_book_to_reduce_net_risk():
@@ -478,6 +499,30 @@ def test_hard_stop_bypasses_v5_profit_reduce_gate(tmp_path):
         params={},
     ))
     assert decision == {"allowed": True, "reason": "risk_exit_not_gated"}
+
+
+def test_profit_reduce_fails_open_when_live_position_snapshot_is_missing(tmp_path):
+    manager = V5ExecutionManager(None, {}, {}, tmp_path)
+
+    class Strategy:
+        id = 401
+
+    async def no_positions(_account):
+        return []
+
+    manager._live_positions = no_positions
+    decision = asyncio.run(manager._pre_reduce_callback(
+        strategy=Strategy(),
+        account=object(),
+        symbol="BTC-USDT-SWAP",
+        direction="LONG",
+        quantity=1,
+        reason="trailing stop peak=80%",
+        params={},
+    ))
+    assert decision["allowed"] is True
+    assert decision["exposure_recovery_required"] is True
+    assert decision["reason"].startswith("profit_reduce_fail_open:")
 
 
 def test_profit_floor_and_trailing_share_one_peak_cycle():
