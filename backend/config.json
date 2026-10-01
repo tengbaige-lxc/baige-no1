@@ -76,7 +76,7 @@
   "minimum_leg_margin_usdt": 2.0,
   "hard_stop_price_pct": 0.025,
   "native_stop_price_pct": 0.03,
-  "max_loss_per_leg_equity_fraction": 0.015,
+  "max_loss_per_leg_equity_fraction": 0.03,
   "params": {
     "trend_v3_enabled": true,
     "trend_v3_entry_position_factor": 1.0,

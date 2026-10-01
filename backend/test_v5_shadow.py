@@ -10,7 +10,7 @@ def test_small_live_config_is_deliberately_bounded():
     assert config["execution_enabled"] is True
     assert config["max_new_legs_per_scan"] == 1
     assert config["requested_leverage"] == 20
-    assert config["max_loss_per_leg_equity_fraction"] == 0.015
+    assert config["max_loss_per_leg_equity_fraction"] == 0.03
     cross = config["cross_sectional_shadow"]
     assert cross["crypto_long_market_regime_gate_enabled"] is True
     assert cross["rebalance_utc_hours"]["crypto"] == [0]
