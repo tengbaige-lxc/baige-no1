@@ -14,7 +14,11 @@ from datetime import datetime, timedelta, timezone
 import math
 from statistics import median
 
-from v5_portfolio import correlation, economic_direction_for_symbol
+from v5_portfolio import (
+    correlation,
+    economic_direction_for_symbol,
+    pool_direction_risk_multiplier,
+)
 
 
 ENERGY_SYMBOLS = frozenset({
@@ -418,6 +422,9 @@ def _directional_weights(selected, config):
         for row, inverse in zip(rows, inverses):
             signal = (row.get("signals") or {}).get(side) or {}
             sign = 1.0 if side == "LONG" else -1.0
+            risk_multiplier = pool_direction_risk_multiplier(
+                config, row["pool"], side
+            )
             legs.append({
                 "symbol": row["symbol"],
                 "pool": row["pool"],
@@ -433,7 +440,10 @@ def _directional_weights(selected, config):
                 "liquidity_trailing": row["liquidity"],
                 "volatility_30m": row["volatility"],
                 "price": row["price"],
-                "notional_weight": side_gross[side] * inverse / denominator,
+                "notional_weight": (
+                    side_gross[side] * risk_multiplier * inverse / denominator
+                ),
+                "risk_multiplier": risk_multiplier,
                 "directional_score": float(signal.get("score") or 0),
                 "opposite_score": float(
                     row["scores"]["SHORT" if side == "LONG" else "LONG"]

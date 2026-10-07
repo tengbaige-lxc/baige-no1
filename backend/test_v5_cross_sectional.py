@@ -299,6 +299,44 @@ def test_factor_gate_keeps_early_trend_pair_and_rejects_late_scores():
     assert {leg["directional_score"] for leg in plan["legs"]} == {3.5}
 
 
+def test_directional_risk_multipliers_reduce_target_weight_without_renormalizing():
+    rows = observations([
+        "EARLY-LONG-USDT-SWAP",
+        "EARLY-SHORT-USDT-SWAP",
+    ])
+    scores = {
+        "EARLY-LONG-USDT-SWAP": {"LONG": 3.5, "SHORT": 0.0},
+        "EARLY-SHORT-USDT-SWAP": {"LONG": 0.0, "SHORT": 3.5},
+    }
+    for row in rows:
+        row["score"] = scores[row["symbol"]][row["direction"]]
+        row["trend_4h_aligned"] = True
+        row["structure_30m_aligned"] = True
+        row["adx_4h_strong"] = False
+    plan = build_cross_sectional_shadow(
+        rows,
+        pool="crypto",
+        now_ms=NOW_MS,
+        config=config(
+            execution_enabled=True,
+            factor_entry_gate_enabled=True,
+            directional_entry_score_min=3.0,
+            directional_entry_score_max=4.0,
+            minimum_directional_score_edge=2.0,
+            require_trend_4h_aligned=True,
+            require_structure_or_adx=True,
+            pool_direction_risk_multipliers={
+                "crypto": {"LONG": 1.0, "SHORT": 0.5},
+            },
+        ),
+    )
+    assert math.isclose(plan["long_weight"], 0.5)
+    assert math.isclose(plan["short_weight"], 0.25)
+    assert math.isclose(plan["gross_weight"], 0.75)
+    assert {leg["direction"]: leg["risk_multiplier"]
+            for leg in plan["legs"]} == {"LONG": 1.0, "SHORT": 0.5}
+
+
 def test_factor_gate_keeps_a_qualified_single_side_without_forcing_a_hedge():
     rows = observations([
         "EARLY-LONG-USDT-SWAP",

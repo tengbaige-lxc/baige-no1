@@ -23,6 +23,8 @@ from v5_portfolio import (
     market_features,
     correlation,
     _position_market,
+    pool_direction_risk_multiplier,
+    rotation_min_holding_hours,
 )
 from app.services.native_stop_validation import (
     native_stop_matches_target,
@@ -324,6 +326,28 @@ def loss_bounded_margin_cap(equity: float, leverage: float, stop_price_pct: floa
            or not math.isfinite(value) or value <= 0 for value in values):
         return 0.0
     return equity * max_loss_fraction / (leverage * stop_price_pct)
+
+
+def risk_adjusted_leg_margin_cap(base_cap: float, config: dict,
+                                 pool: str, direction: str) -> float:
+    if not isinstance(base_cap, (int, float)) or isinstance(base_cap, bool) \
+            or not math.isfinite(base_cap) or base_cap <= 0:
+        return 0.0
+    return base_cap * pool_direction_risk_multiplier(config, pool, direction)
+
+
+def holding_period_satisfied(opened_at_ts, minimum_hours: float,
+                             now_ts: float | None = None) -> bool:
+    minimum = max(0.0, float(minimum_hours or 0))
+    if minimum <= 0:
+        return True
+    try:
+        opened = float(opened_at_ts)
+        now = float(time.time() if now_ts is None else now_ts)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(opened) and math.isfinite(now) \
+        and now >= opened and now - opened >= minimum * 3600
 
 
 def restrict_legs_for_exposure_recovery(legs: list[dict], used_by_side: dict[str, float],
@@ -1121,6 +1145,31 @@ class V5ExecutionManager:
             key: position for position in positions
             if (key := self._position_key(position)) is not None
         }
+        strategy_markers = {
+            self.engine._format_strategy_marker(strategy)
+            for strategy in strategies.values()
+        }
+        opened_at_by_key = {}
+        if strategy_markers:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(
+                    TradeRecord.symbol,
+                    TradeRecord.direction,
+                    TradeRecord.created_at,
+                ).where(
+                    TradeRecord.exchange_config_id == account.id,
+                    TradeRecord.is_closed == False,
+                    TradeRecord.strategy_tag.in_(strategy_markers),
+                ))
+                for symbol, direction, created_at in result.all():
+                    if created_at is None:
+                        continue
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=timezone.utc)
+                    key = (str(symbol).upper(), str(direction).upper())
+                    opened = created_at.timestamp()
+                    if key not in opened_at_by_key or opened < opened_at_by_key[key]:
+                        opened_at_by_key[key] = opened
         owned = {}
         for (pool, strategy_direction), strategy in strategies.items():
             for symbol, direction in await self.engine._get_strategy_live_position_keys(
@@ -1135,6 +1184,7 @@ class V5ExecutionManager:
                     "risk_direction": economic_direction_for_symbol(*key),
                     "risk_factor": risk_factor_for_symbol(key[0], pool),
                     "notional_weight": self._rotation_notional(live[key]),
+                    "opened_at_ts": opened_at_by_key.get(key),
                     "strategy": strategy,
                 })
         markets = await self._rotation_markets({row["symbol"] for row in owned.values()})
@@ -1212,6 +1262,7 @@ class V5ExecutionManager:
         min_drawdown = float(rotation_config.get(
             "rotation_hedge_min_drawdown_reduction", 0.0025))
         required_slots = max(2, int(rotation_config.get("rotation_dead_slots", 2)))
+        now_ts = time.time()
         live_keys = {(row["symbol"], row["direction"]) for row in rows}
         target_candidates = []
         for pool in changed_pools:
@@ -1248,10 +1299,21 @@ class V5ExecutionManager:
                 minimum_relative_volatility_reduction=min_volatility,
                 minimum_drawdown_reduction=min_drawdown,
             )
+            minimum_holding_hours = rotation_min_holding_hours(
+                rotation_config, pool, row["direction"]
+            )
+            holding_satisfied = holding_period_satisfied(
+                row.get("opened_at_ts"), minimum_holding_hours, now_ts
+            )
+            effective_classification = (
+                "MINIMUM_HOLD"
+                if classification == "DEAD" and not holding_satisfied
+                else classification
+            )
             slot = str(plans.get(pool, {}).get("target_slot") or "")
             dead_count = self._record_rotation_classification(
                 account.id, row["symbol"], row["direction"], pool, slot,
-                classification,
+                effective_classification,
             )
             ranking = rankings.get(pool, {}).get(key)
             assessment = {
@@ -1260,11 +1322,15 @@ class V5ExecutionManager:
                 "pool": pool,
                 "risk_factor": row["risk_factor"],
                 "classification": classification,
+                "effective_classification": effective_classification,
+                "minimum_holding_hours": minimum_holding_hours,
+                "holding_period_satisfied": holding_satisfied,
                 "dead_slots": dead_count,
                 "hedge_contribution": contributions.get(key),
             }
             assessments.append(assessment)
-            if classification != "DEAD" or dead_count < required_slots or not ranking:
+            if effective_classification != "DEAD" \
+                    or dead_count < required_slots or not ranking:
                 continue
             stale = {
                 **row,
@@ -1483,7 +1549,7 @@ class V5ExecutionManager:
             float(self.config["hard_stop_price_pct"]),
             float(self.config["native_stop_price_pct"]),
         )
-        per_leg_margin_cap = loss_bounded_margin_cap(
+        base_per_leg_margin_cap = loss_bounded_margin_cap(
             equity,
             float(self.config["requested_leverage"]),
             protective_stop,
@@ -1506,6 +1572,17 @@ class V5ExecutionManager:
                 leg["symbol"], leg.get("pool"))
             factor_remaining = factor_margin_remaining(
                 equity, factor, used_by_factor.get(factor, 0.0), self.config)
+            risk_multiplier = pool_direction_risk_multiplier(
+                self.config.get("cross_sectional_shadow") or {},
+                leg.get("pool"),
+                contract_side,
+            )
+            per_leg_margin_cap = risk_adjusted_leg_margin_cap(
+                base_per_leg_margin_cap,
+                self.config.get("cross_sectional_shadow") or {},
+                leg.get("pool"),
+                contract_side,
+            )
             margin = min(
                 side_target / divisor,
                 side_remaining,
@@ -1519,6 +1596,7 @@ class V5ExecutionManager:
                     "calculated_margin": round(margin, 4),
                     "minimum_margin": float(self.config["minimum_leg_margin_usdt"]),
                     "risk_cap": round(per_leg_margin_cap, 4),
+                    "risk_multiplier": risk_multiplier,
                 })
                 continue
             strategy = strategies[(leg["pool"], contract_side)]

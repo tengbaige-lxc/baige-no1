@@ -142,6 +142,10 @@
     "require_trend_4h_aligned": true,
     "require_structure_or_adx": true,
     "single_side_target_weight": 0.30,
+    "pool_direction_risk_multipliers": {
+      "crypto": {"LONG": 1.0, "SHORT": 0.5},
+      "tradfi": {"LONG": 1.0, "SHORT": 0.25}
+    },
     "max_same_side_correlation": {
       "crypto": 0.7,
       "tradfi": 0.8,
@@ -156,6 +160,9 @@
     },
     "cost_bps_per_side": 3.0,
     "rotation_dead_slots": 2,
+    "rotation_min_holding_hours": {
+      "tradfi": {"LONG": 72}
+    },
     "rotation_min_alpha_improvement": 1.0,
     "rotation_cost_multiple": 2.0,
     "rotation_hedge_min_return_samples": 96,

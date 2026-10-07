@@ -7,9 +7,11 @@ from v5_portfolio import (
     build_portfolio,
     economic_direction_for_symbol,
     market_features,
+    pool_direction_risk_multiplier,
     risk_factor_for_symbol,
     risk_group_for_symbol,
     rotation_proposal,
+    rotation_min_holding_hours,
     size_proposal,
 )
 
@@ -31,6 +33,29 @@ def book():
 
 
 class PortfolioTests(unittest.TestCase):
+    def test_pool_direction_risk_and_holding_overrides(self):
+        config = {
+            "pool_direction_risk_multipliers": {
+                "crypto": {"LONG": 1.0, "SHORT": 0.5},
+                "tradfi": {"LONG": 1.0, "SHORT": 0.25},
+            },
+            "rotation_min_holding_hours": {
+                "tradfi": {"LONG": 72},
+            },
+        }
+        self.assertEqual(pool_direction_risk_multiplier(
+            config, "crypto", "LONG"), 1.0)
+        self.assertEqual(pool_direction_risk_multiplier(
+            config, "crypto", "SHORT"), 0.5)
+        self.assertEqual(pool_direction_risk_multiplier(
+            config, "tradfi", "SHORT"), 0.25)
+        self.assertEqual(pool_direction_risk_multiplier(
+            config, "unknown", "LONG"), 1.0)
+        self.assertEqual(rotation_min_holding_hours(
+            config, "tradfi", "LONG"), 72)
+        self.assertEqual(rotation_min_holding_hours(
+            config, "tradfi", "SHORT"), 0)
+
     def test_at_most_four_each_no_duplicate_symbols(self):
         plan = build_portfolio(book(), now_ms=NOW)
         self.assertEqual(plan['status'], 'PROPOSAL')

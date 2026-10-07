@@ -34,6 +34,42 @@ FACTOR_SYMBOLS = {
 }
 
 
+def _pool_direction_value(config, key, pool, direction, default):
+    mapping = config.get(key) or {}
+    if not isinstance(mapping, dict):
+        return default
+    pool_value = mapping.get(str(pool or "").lower(), mapping.get("default", default))
+    if isinstance(pool_value, dict):
+        return pool_value.get(
+            str(direction or "").upper(), pool_value.get("default", default)
+        )
+    return pool_value
+
+
+def pool_direction_risk_multiplier(config, pool, direction):
+    """Return the configured live-risk multiplier for one market side."""
+    value = _pool_direction_value(
+        config, "pool_direction_risk_multipliers", pool, direction, 1.0
+    )
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.0, min(1.0, value)) if math.isfinite(value) else 1.0
+
+
+def rotation_min_holding_hours(config, pool, direction):
+    """Return the minimum age before discretionary dead-capital rotation."""
+    value = _pool_direction_value(
+        config, "rotation_min_holding_hours", pool, direction, 0.0
+    )
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, value) if math.isfinite(value) else 0.0
+
+
 def risk_group_for_symbol(symbol):
     normalized = str(symbol or '').strip().upper()
     return next((name for name, members in RISK_GROUPS.items()

@@ -7,9 +7,11 @@ from v5_execution import (
     dynamic_exposure_plan,
     execution_params,
     factor_margin_remaining,
+    holding_period_satisfied,
     is_portfolio_profit_reduce_reason,
     loss_bounded_margin_cap,
     profit_reduce_exposure_decision,
+    risk_adjusted_leg_margin_cap,
     prioritize_factor_recovery,
     restrict_legs_for_exposure_recovery,
     select_legs,
@@ -67,6 +69,24 @@ def test_execution_params_separates_software_and_exchange_disaster_stops():
         {"min_peak": 0.80, "callback": 0.30},
         {"min_peak": 1.50, "callback": 0.25},
     ]
+
+
+def test_directional_risk_multiplier_reduces_live_margin_cap():
+    config = {"pool_direction_risk_multipliers": {
+        "crypto": {"LONG": 1.0, "SHORT": 0.5},
+        "tradfi": {"LONG": 1.0, "SHORT": 0.25},
+    }}
+    assert risk_adjusted_leg_margin_cap(10, config, "crypto", "LONG") == 10
+    assert risk_adjusted_leg_margin_cap(10, config, "crypto", "SHORT") == 5
+    assert risk_adjusted_leg_margin_cap(10, config, "tradfi", "SHORT") == 2.5
+
+
+def test_tradfi_long_minimum_holding_period_fails_closed_without_age():
+    now = 1_800_000_000
+    assert not holding_period_satisfied(None, 72, now)
+    assert not holding_period_satisfied(now - 71 * 3600, 72, now)
+    assert holding_period_satisfied(now - 72 * 3600, 72, now)
+    assert holding_period_satisfied(None, 0, now)
 
 
 def test_managed_native_stop_must_match_the_current_disaster_line():
