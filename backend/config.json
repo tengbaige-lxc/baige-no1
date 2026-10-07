@@ -141,6 +141,7 @@
     "minimum_directional_score_edge": 2.0,
     "require_trend_4h_aligned": true,
     "require_structure_or_adx": true,
+    "short_require_strong_adx_4h": true,
     "single_side_target_weight": 0.30,
     "pool_direction_risk_multipliers": {
       "crypto": {"LONG": 1.0, "SHORT": 0.5},

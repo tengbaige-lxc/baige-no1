@@ -38,3 +38,34 @@ def test_optimizer_reads_rebalance_snapshots_but_does_not_auto_apply():
     }
     assert report["requirements"]["per_pool_direction"] == 20
     assert report["auto_apply"] is False
+
+
+def test_optimizer_compares_short_adx_gate_with_previous_entry_rule():
+    start = datetime(2026, 9, 7, tzinfo=timezone.utc)
+
+    def short_payload(completed, price, slot):
+        row = payload(completed, price, "LIVE_REBALANCE", slot)
+        for observation in row["observations_by_pool"]["crypto"]:
+            observation["score"] = (
+                3.5 if observation["direction"] == "SHORT" else 0.0
+            )
+            observation["adx_4h_strong"] = False
+        leg = row["cross_sectional_shadow_by_pool"]["crypto"]["legs"][0]
+        leg.update(direction="SHORT", directional_score=3.5,
+                   opposite_score=0.0, directional_score_edge=3.5,
+                   score_spread=-3.5, adx_4h_strong=False)
+        return row
+
+    with TemporaryDirectory() as folder:
+        archive_cross_sectional_scan(
+            folder, short_payload(start.isoformat(), 100.0, "2026-09-07T00"),
+        )
+        archive_cross_sectional_scan(
+            folder, short_payload(
+                (start + timedelta(hours=25)).isoformat(), 110.0,
+                "2026-09-08T00",
+            ),
+        )
+        report = factor_grid_report(folder)
+    assert report["variants"]["current"]["samples"] == 0
+    assert report["variants"]["previous_short_structure_or_adx"]["samples"] == 1

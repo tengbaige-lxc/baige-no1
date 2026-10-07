@@ -222,6 +222,12 @@ def _directional_entry_allowed(row, direction, config):
         "trend_4h_aligned"
     ):
         return False
+    if (
+        direction == "SHORT"
+        and bool(config.get("short_require_strong_adx_4h", False))
+        and not signal.get("adx_4h_strong")
+    ):
+        return False
     if bool(config.get("require_structure_or_adx", True)) and not (
         signal.get("structure_30m_aligned") or signal.get("adx_4h_strong")
     ):
@@ -544,6 +550,16 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
         ]
         gate_pruned_frozen_longs = len(gated_legs) != len(stored_legs)
         stored_legs = gated_legs
+    gate_pruned_frozen_shorts = False
+    if config.get("factor_entry_gate_enabled") and config.get(
+        "short_require_strong_adx_4h", False
+    ):
+        gated_legs = [
+            leg for leg in stored_legs
+            if leg.get("direction") != "SHORT" or leg.get("adx_4h_strong")
+        ]
+        gate_pruned_frozen_shorts = len(gated_legs) != len(stored_legs)
+        stored_legs = gated_legs
     last_slot = state.get("last_rebalance_slot")
     if not last_slot and state.get("last_rebalance_day"):
         last_slot = f"{state['last_rebalance_day']}T{rebalance_hours[0]:02d}"
@@ -557,7 +573,7 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
         "universe_method_version": int(config.get("universe_method_version", 1)),
         "universe": {**(state.get("universe") or {}), pool: universe},
     }
-    if gate_pruned_frozen_longs:
+    if gate_pruned_frozen_longs or gate_pruned_frozen_shorts:
         next_state["targets"] = {
             **(state.get("targets") or {}),
             pool: target,

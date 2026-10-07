@@ -299,6 +299,68 @@ def test_factor_gate_keeps_early_trend_pair_and_rejects_late_scores():
     assert {leg["directional_score"] for leg in plan["legs"]} == {3.5}
 
 
+def test_short_adx_gate_rejects_weak_trend_but_keeps_strong_short_and_long():
+    rows = observations([
+        "EARLY-LONG-USDT-SWAP", "WEAK-SHORT-USDT-SWAP",
+        "STRONG-SHORT-USDT-SWAP",
+    ], pool="tradfi")
+    for row in rows:
+        short = "SHORT" in row["symbol"]
+        row["score"] = 3.5 if (
+            row["direction"] == ("SHORT" if short else "LONG")
+        ) else 0.0
+        row["trend_4h_aligned"] = True
+        row["structure_30m_aligned"] = True
+        row["adx_4h_strong"] = row["symbol"] == "STRONG-SHORT-USDT-SWAP"
+    plan = build_cross_sectional_shadow(
+        rows, pool="tradfi", now_ms=NOW_MS,
+        config=config(
+            execution_enabled=True, factor_entry_gate_enabled=True,
+            directional_entry_score_min=3.0, directional_entry_score_max=4.0,
+            minimum_directional_score_edge=2.0,
+            require_trend_4h_aligned=True, require_structure_or_adx=True,
+            short_require_strong_adx_4h=True,
+        ),
+    )
+    assert {(leg["symbol"], leg["direction"]) for leg in plan["legs"]} == {
+        ("EARLY-LONG-USDT-SWAP", "LONG"),
+        ("STRONG-SHORT-USDT-SWAP", "SHORT"),
+    }
+
+
+def test_short_adx_gate_prunes_frozen_weak_short_without_closing_long():
+    rows = observations([
+        "EARLY-LONG-USDT-SWAP", "WEAK-SHORT-USDT-SWAP",
+    ], pool="tradfi")
+    for row in rows:
+        short = row["symbol"] == "WEAK-SHORT-USDT-SWAP"
+        row["score"] = 3.5 if (
+            row["direction"] == ("SHORT" if short else "LONG")
+        ) else 0.0
+        row["trend_4h_aligned"] = True
+        row["structure_30m_aligned"] = True
+        row["adx_4h_strong"] = False
+    common = config(
+        execution_enabled=True, factor_entry_gate_enabled=True,
+        directional_entry_score_min=3.0, directional_entry_score_max=4.0,
+        minimum_directional_score_edge=2.0,
+        require_trend_4h_aligned=True, require_structure_or_adx=True,
+    )
+    first = build_cross_sectional_shadow(
+        rows, pool="tradfi", now_ms=NOW_MS, config=common,
+    )
+    assert {leg["direction"] for leg in first["legs"]} == {"LONG", "SHORT"}
+    held = build_cross_sectional_shadow(
+        rows, pool="tradfi", now_ms=NOW_MS + 3_600_000,
+        state=first["state"],
+        config={**common, "short_require_strong_adx_4h": True},
+    )
+    assert held["status"] == "LIVE_HOLD"
+    assert [leg["direction"] for leg in held["legs"]] == ["LONG"]
+    assert [leg["direction"] for leg in
+            held["state"]["target_legs"]["tradfi"]] == ["LONG"]
+
+
 def test_directional_risk_multipliers_reduce_target_weight_without_renormalizing():
     rows = observations([
         "EARLY-LONG-USDT-SWAP",

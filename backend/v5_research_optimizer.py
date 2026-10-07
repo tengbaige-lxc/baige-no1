@@ -33,6 +33,11 @@ VARIANTS = {
     "no_momentum_boost": {"score_min": 3.0, "score_max": 4.0, "edge": 2.0,
                           "alpha": 1.0, "momentum_weight": 0.0,
                           "structure_only": False},
+    "previous_short_structure_or_adx": {
+        "score_min": 3.0, "score_max": 4.0, "edge": 2.0,
+        "alpha": 1.0, "momentum_weight": 0.5,
+        "structure_only": False, "short_require_strong_adx_4h": False,
+    },
 }
 
 
@@ -140,6 +145,12 @@ def factor_grid_report(state_dir, cost_bps_per_side=3.0):
             confirmation = row["structure"] if variant["structure_only"] else (
                 row["structure"] or row["adx"]
             )
+            if (
+                row["direction"] == "SHORT"
+                and variant.get("short_require_strong_adx_4h", True)
+                and not row["adx"]
+            ):
+                continue
             if (
                 variant["score_min"] <= row["score"] <= variant["score_max"]
                 and row["edge"] >= variant["edge"]
