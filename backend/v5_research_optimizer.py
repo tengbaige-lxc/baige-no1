@@ -127,6 +127,9 @@ def factor_grid_report(state_dir, cost_bps_per_side=3.0):
                     "normalized_momentum": normalized,
                     "trend": bool(row[f"{prefix}_trend_4h_aligned"]),
                     "structure": bool(row[f"{prefix}_structure_30m_aligned"]),
+                    "opposite_structure": bool(row[
+                        f"{'short' if direction == 'LONG' else 'long'}_structure_30m_aligned"
+                    ]),
                     "adx": bool(row[f"{prefix}_adx_4h_strong"]),
                     "outcome": sign * (float(row["future_price"]) / float(row["price"]) - 1),
                 })
@@ -149,6 +152,12 @@ def factor_grid_report(state_dir, cost_bps_per_side=3.0):
                 row["direction"] == "SHORT"
                 and variant.get("short_require_strong_adx_4h", True)
                 and not row["adx"]
+            ):
+                continue
+            if (
+                row["direction"] == "SHORT"
+                and variant.get("short_require_strong_adx_4h", True)
+                and row["opposite_structure"]
             ):
                 continue
             if (

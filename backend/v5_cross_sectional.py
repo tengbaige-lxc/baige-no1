@@ -205,6 +205,14 @@ def _correlation_ok(candidate, selected, maximum):
     return True
 
 
+def _short_opposed_by_30m(row):
+    return bool(
+        ((row.get("signals") or {}).get("LONG") or {}).get(
+            "structure_30m_aligned"
+        )
+    )
+
+
 def _directional_entry_allowed(row, direction, config):
     if not bool(config.get("factor_entry_gate_enabled")):
         return True
@@ -226,6 +234,12 @@ def _directional_entry_allowed(row, direction, config):
         direction == "SHORT"
         and bool(config.get("short_require_strong_adx_4h", False))
         and not signal.get("adx_4h_strong")
+    ):
+        return False
+    if (
+        direction == "SHORT"
+        and bool(config.get("short_require_strong_adx_4h", False))
+        and _short_opposed_by_30m(row)
     ):
         return False
     if bool(config.get("require_structure_or_adx", True)) and not (
@@ -554,9 +568,15 @@ def build_cross_sectional_shadow(observations, *, pool, now_ms, state=None, conf
     if config.get("factor_entry_gate_enabled") and config.get(
         "short_require_strong_adx_4h", False
     ):
+        observed = {row["symbol"]: row for row in paired}
         gated_legs = [
             leg for leg in stored_legs
-            if leg.get("direction") != "SHORT" or leg.get("adx_4h_strong")
+            if leg.get("direction") != "SHORT" or (
+                leg.get("adx_4h_strong")
+                and not _short_opposed_by_30m(
+                    observed.get(leg.get("symbol")) or {}
+                )
+            )
         ]
         gate_pruned_frozen_shorts = len(gated_legs) != len(stored_legs)
         stored_legs = gated_legs
