@@ -1,0 +1,22 @@
+[Unit]
+Description=Baige V5 read-only candidate research
+After=local-fs.target
+ConditionPathExists=/root/baige-no5/backend/state/v5_cross_sectional_research.sqlite
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/baige-no5/research
+Environment=PYTHONPATH=/root/baige-no5/backend
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/root/baige-no4/venv/bin/python /root/baige-no5/research/v5_candidate_research.py --state-dir /root/baige-no5/backend/state --output /root/baige-no5/research/reports/latest.json
+StandardOutput=journal
+StandardError=journal
+PrivateNetwork=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# SQLite read-only WAL access may need to create its shared-memory sidecar.
+ReadWritePaths=/root/baige-no5/backend/state /root/baige-no5/research/reports
+NoNewPrivileges=true
+UMask=0077
+TimeoutStartSec=5min

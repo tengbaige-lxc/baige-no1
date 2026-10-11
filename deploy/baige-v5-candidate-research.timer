@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Baige V5 candidate research daily
+
+[Timer]
+OnCalendar=*-*-* 01:10:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+Unit=baige-v5-candidate-research.service
+
+[Install]
+WantedBy=timers.target
