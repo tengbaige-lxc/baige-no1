@@ -66,6 +66,10 @@ def _connect(state_dir):
             short_adx_4h_strong INTEGER,
             long_adx_4h REAL,
             short_adx_4h REAL,
+            long_trigger_5m INTEGER,
+            short_trigger_5m INTEGER,
+            long_trigger_score_5m REAL,
+            short_trigger_score_5m REAL,
             PRIMARY KEY (scan_at, pool, symbol)
         );
         CREATE INDEX IF NOT EXISTS idx_v5_observation_time
@@ -138,6 +142,10 @@ def _connect(state_dir):
         "short_adx_4h_strong": "INTEGER",
         "long_adx_4h": "REAL",
         "short_adx_4h": "REAL",
+        "long_trigger_5m": "INTEGER",
+        "short_trigger_5m": "INTEGER",
+        "long_trigger_score_5m": "REAL",
+        "short_trigger_score_5m": "REAL",
     })
     _ensure_columns(connection, "shadow_legs", {
         "directional_score": "REAL",
@@ -192,6 +200,9 @@ def _observation_rows(observations_by_pool):
                 "structure_30m_aligned": int(bool(row.get("structure_30m_aligned"))),
                 "adx_4h_strong": int(bool(row.get("adx_4h_strong"))),
                 "adx_4h": _finite(row.get("adx_4h")),
+                "trigger_5m": (int(bool(row["trigger_5m"]))
+                               if row.get("trigger_5m") is not None else None),
+                "trigger_score_5m": _finite(row.get("trigger_score_5m")),
             }
             item["price"] = _finite(row.get("price"))
             market = row.get("market") or {}
@@ -235,8 +246,10 @@ def archive_cross_sectional_scan(state_dir, payload):
                         quote_volume_trailing, long_trend_4h_aligned,
                         short_trend_4h_aligned, long_structure_30m_aligned,
                         short_structure_30m_aligned, long_adx_4h_strong,
-                        short_adx_4h_strong, long_adx_4h, short_adx_4h
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        short_adx_4h_strong, long_adx_4h, short_adx_4h,
+                        long_trigger_5m, short_trigger_5m,
+                        long_trigger_score_5m, short_trigger_score_5m
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (completed, scan_ts, pool, symbol, row["scores"]["LONG"],
                      row["scores"]["SHORT"], row.get("price"), row.get("return_24h"),
@@ -249,7 +262,11 @@ def archive_cross_sectional_scan(state_dir, payload):
                      row["signals"]["LONG"]["adx_4h_strong"],
                      row["signals"]["SHORT"]["adx_4h_strong"],
                      row["signals"]["LONG"]["adx_4h"],
-                     row["signals"]["SHORT"]["adx_4h"]),
+                     row["signals"]["SHORT"]["adx_4h"],
+                     row["signals"]["LONG"]["trigger_5m"],
+                     row["signals"]["SHORT"]["trigger_5m"],
+                     row["signals"]["LONG"]["trigger_score_5m"],
+                     row["signals"]["SHORT"]["trigger_score_5m"]),
                 )
                 inserted_observations += 1
 

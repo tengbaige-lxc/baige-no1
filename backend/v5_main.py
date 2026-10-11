@@ -22,6 +22,7 @@ from v5_portfolio import build_portfolio, economic_direction_for_symbol, market_
 from v5_cross_sectional import build_cross_sectional_shadow
 from v5_research_archive import archive_cross_sectional_scan, research_summary
 from v5_research_optimizer import factor_grid_report
+from v5_factor_lab import factor_lab_report
 from v5_execution import V5ExecutionManager
 from v4_candidate_window import revalidation_allows, update_candidate_cache
 from account_metrics import summarize_events
@@ -65,6 +66,7 @@ def strength_metadata(factors, score, config):
     trend_4h_aligned = bool((by_key.get('trend_filter') or {}).get('triggered'))
     structure_30m_aligned = bool((by_key.get('trend_v3_30m') or {}).get('triggered'))
     adx_factor = by_key.get('trend_v3_adx_atr') or {}
+    timing_factor = by_key.get('trend_v3_5m')
     adx_4h_strong = bool(adx_factor.get('triggered'))
     adx_raw = adx_factor.get('raw') or {}
     try:
@@ -83,6 +85,9 @@ def strength_metadata(factors, score, config):
         'adx_4h_strong': adx_4h_strong,
         'adx_4h': adx_4h,
         'strong_trend': strong,
+        'trigger_5m': bool(timing_factor.get('triggered')) if timing_factor else None,
+        'trigger_score_5m': float(timing_factor.get('score_added') or 0)
+                            if timing_factor else None,
     }
 
 
@@ -595,6 +600,17 @@ def cross_sectional_research():
 @app.get('/research-optimization')
 def research_optimization():
     return factor_grid_report(STATE)
+
+
+@app.get('/factor-lab')
+def factor_lab():
+    research_config = json.loads((ROOT / 'config.json').read_text())[
+        'cross_sectional_shadow'
+    ]
+    return factor_lab_report(
+        STATE, research_config,
+        research_config.get('cost_bps_per_side', 3.0),
+    )
 
 
 @app.get('/account-performance')

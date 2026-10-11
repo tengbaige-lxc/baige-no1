@@ -1,4 +1,6 @@
 import asyncio
+import json
+from pathlib import Path
 
 from v5_execution import (
     V5ExecutionManager,
@@ -79,6 +81,19 @@ def test_directional_risk_multiplier_reduces_live_margin_cap():
     assert risk_adjusted_leg_margin_cap(10, config, "crypto", "LONG") == 10
     assert risk_adjusted_leg_margin_cap(10, config, "crypto", "SHORT") == 5
     assert risk_adjusted_leg_margin_cap(10, config, "tradfi", "SHORT") == 2.5
+
+
+def test_live_config_caps_new_legs_at_five_percent_equity():
+    config = json.loads((Path(__file__).parent / "config.json").read_text())
+    base = loss_bounded_margin_cap(
+        100, config["requested_leverage"], config["native_stop_price_pct"],
+        config["max_loss_per_leg_equity_fraction"],
+    )
+    for pool in ("crypto", "tradfi"):
+        for direction in ("LONG", "SHORT"):
+            assert risk_adjusted_leg_margin_cap(
+                base, config["cross_sectional_shadow"], pool, direction,
+            ) == 5.0
 
 
 def test_tradfi_long_minimum_holding_period_fails_closed_without_age():

@@ -144,8 +144,8 @@
     "short_require_strong_adx_4h": true,
     "single_side_target_weight": 0.30,
     "pool_direction_risk_multipliers": {
-      "crypto": {"LONG": 1.0, "SHORT": 0.5},
-      "tradfi": {"LONG": 1.0, "SHORT": 0.25}
+      "crypto": {"LONG": 1.0, "SHORT": 1.0},
+      "tradfi": {"LONG": 1.0, "SHORT": 1.0}
     },
     "max_same_side_correlation": {
       "crypto": 0.7,
