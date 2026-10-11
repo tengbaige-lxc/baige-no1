@@ -350,13 +350,24 @@ def holding_period_satisfied(opened_at_ts, minimum_hours: float,
         and now >= opened and now - opened >= minimum * 3600
 
 
+def _material_exposure(total_margin: float, equity: float,
+                       minimum_equity_share: float) -> bool:
+    values = (total_margin, equity, minimum_equity_share)
+    if any(not math.isfinite(float(value)) for value in values):
+        return True
+    if equity <= 0 or not 0 <= minimum_equity_share <= 1:
+        return True
+    return total_margin >= equity * minimum_equity_share
+
+
 def restrict_legs_for_exposure_recovery(legs: list[dict], used_by_side: dict[str, float],
-                                        max_side_share: float) -> tuple[list[dict], dict | None]:
+                                        max_side_share: float, *, equity: float,
+                                        minimum_equity_share: float) -> tuple[list[dict], dict | None]:
     """When the live book is imbalanced, consider only qualified recovery-side legs."""
     long_margin = max(0.0, float(used_by_side.get("LONG") or 0))
     short_margin = max(0.0, float(used_by_side.get("SHORT") or 0))
     total = long_margin + short_margin
-    if total <= 0:
+    if total <= 0 or not _material_exposure(total, equity, minimum_equity_share):
         return legs, None
     limit = max(0.5, min(1.0, float(max_side_share)))
     shares = {"LONG": long_margin / total, "SHORT": short_margin / total}
@@ -377,7 +388,8 @@ def restrict_legs_for_exposure_recovery(legs: list[dict], used_by_side: dict[str
 
 def prioritize_factor_recovery(
         legs: list[dict], used_by_factor_side: dict[str, dict[str, float]],
-        max_side_share: float) -> tuple[list[dict], dict | None]:
+        max_side_share: float, *, equity: float,
+        minimum_equity_share: float) -> tuple[list[dict], dict | None]:
     """Block majority-side adds inside an imbalanced factor, without fake cross-factor hedges."""
     limit = max(0.5, min(1.0, float(max_side_share)))
     recoveries = {}
@@ -385,7 +397,7 @@ def prioritize_factor_recovery(
         long_margin = max(0.0, float(margins.get("LONG") or 0))
         short_margin = max(0.0, float(margins.get("SHORT") or 0))
         total = long_margin + short_margin
-        if total <= 0:
+        if total <= 0 or not _material_exposure(total, equity, minimum_equity_share):
             continue
         shares = {"LONG": long_margin / total, "SHORT": short_margin / total}
         dominant = max(shares, key=shares.get)
@@ -1507,9 +1519,15 @@ class V5ExecutionManager:
         legs, factor_recovery = prioritize_factor_recovery(
             legs, used_by_factor_side,
             float(self.config.get("max_factor_side_risk_share", .70)),
+            equity=equity,
+            minimum_equity_share=float(self.config.get(
+                "min_recovery_margin_equity_share", .10)),
         )
         legs, exposure_recovery = restrict_legs_for_exposure_recovery(
-            legs, used_by_side, float(self.config.get("max_side_risk_share", .70)))
+            legs, used_by_side, float(self.config.get("max_side_risk_share", .70)),
+            equity=equity,
+            minimum_equity_share=float(self.config.get(
+                "min_recovery_margin_equity_share", .10)))
         legs = legs[:int(self.config.get("max_new_legs_per_scan", 2))]
         if not legs:
             at_total_cap = len({symbol for symbol, _ in live}) >= max_total

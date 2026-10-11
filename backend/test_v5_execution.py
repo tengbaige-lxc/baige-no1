@@ -385,7 +385,8 @@ def test_exposure_recovery_filters_majority_before_top_n_cutoff():
         leg("HEDGE-LONG", "LONG", 8),
     ]
     filtered, recovery = restrict_legs_for_exposure_recovery(
-        legs, {"LONG": 10, "SHORT": 90}, .70)
+        legs, {"LONG": 10, "SHORT": 90}, .70,
+        equity=100, minimum_equity_share=.10)
     assert [row["symbol"] for row in filtered] == ["HEDGE-LONG"]
     assert recovery["dominant_side"] == "SHORT"
     assert recovery["recovery_side"] == "LONG"
@@ -395,7 +396,8 @@ def test_exposure_recovery_filters_majority_before_top_n_cutoff():
 def test_balanced_book_keeps_all_qualified_legs():
     legs = [leg("L", "LONG", 8), leg("S", "SHORT", 8)]
     filtered, recovery = restrict_legs_for_exposure_recovery(
-        legs, {"LONG": 45, "SHORT": 55}, .70)
+        legs, {"LONG": 45, "SHORT": 55}, .70,
+        equity=100, minimum_equity_share=.10)
     assert filtered == legs
     assert recovery is None
 
@@ -408,11 +410,43 @@ def test_factor_recovery_does_not_treat_energy_as_equity_hedge():
         [energy_long, equity_short, equity_long],
         {"EQUITY": {"LONG": 10, "SHORT": 90}},
         .70,
+        equity=100, minimum_equity_share=.10,
     )
     assert [row["symbol"] for row in filtered] == [
         "AAPL-USDT-SWAP", "USO-USDT-SWAP"]
     assert recovery["factors"]["EQUITY"]["recovery_side"] == "LONG"
     assert recovery["blocked_symbols"] == ["NVDA-USDT-SWAP"]
+
+
+def test_small_one_sided_position_does_not_block_qualified_targets():
+    short = leg("NEW-SHORT", "SHORT", 8) | {"pool": "crypto"}
+    legs = [short]
+    filtered, recovery = restrict_legs_for_exposure_recovery(
+        legs, {"LONG": 0, "SHORT": 2}, .70,
+        equity=81, minimum_equity_share=.10)
+    assert filtered == legs
+    assert recovery is None
+
+    filtered, recovery = prioritize_factor_recovery(
+        legs, {"CRYPTO": {"LONG": 0, "SHORT": 2}}, .70,
+        equity=81, minimum_equity_share=.10)
+    assert filtered == legs
+    assert recovery is None
+
+
+def test_material_one_sided_exposure_still_blocks_same_side():
+    short = leg("NEW-SHORT", "SHORT", 8) | {"pool": "crypto"}
+    filtered, recovery = restrict_legs_for_exposure_recovery(
+        [short], {"LONG": 0, "SHORT": 10}, .70,
+        equity=100, minimum_equity_share=.10)
+    assert filtered == []
+    assert recovery["recovery_side"] == "LONG"
+
+    filtered, recovery = prioritize_factor_recovery(
+        [short], {"CRYPTO": {"LONG": 0, "SHORT": 10}}, .70,
+        equity=100, minimum_equity_share=.10)
+    assert filtered == []
+    assert recovery["blocked_symbols"] == ["NEW-SHORT"]
 
 
 def test_factor_margin_cap_is_independent_per_asset_class():

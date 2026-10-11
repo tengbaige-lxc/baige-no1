@@ -56,6 +56,7 @@
   "max_new_legs_per_scan": 1,
   "max_side_risk_share": 0.70,
   "max_factor_side_risk_share": 0.70,
+  "min_recovery_margin_equity_share": 0.10,
   "normal_max_side_risk_share": 0.60,
   "strong_max_side_risk_share": 0.70,
   "single_side_margin_limit": 0.30,
