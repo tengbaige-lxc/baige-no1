@@ -27,6 +27,7 @@ CANDIDATE = {
     "required_features": (
         "long_trigger_5m", "short_trigger_5m",
         "long_trigger_score_5m", "short_trigger_score_5m",
+        "long_timing_score_5m", "short_timing_score_5m",
     ),
 }
 MIN_CALENDAR_DAYS = 14
@@ -57,7 +58,7 @@ def _signals(row, *, separate_timing):
         prefix = direction.lower()
         score = float(row[f"{prefix}_score"] or 0)
         if separate_timing:
-            score -= float(row[f"{prefix}_trigger_score_5m"])
+            score -= float(row[f"{prefix}_timing_score_5m"])
         signals[direction] = {
             "score": score,
             "trend_4h_aligned": bool(row[f"{prefix}_trend_4h_aligned"]),
@@ -146,6 +147,17 @@ def factor_lab_report(state_dir, config, cost_bps_per_side=3.0):
             for direction in ("long", "short")
         ]
         if any(value is None or not 0 <= value <= 2 for value in bonuses):
+            continue
+        timing_scores = [
+            _finite(row[f"{direction}_timing_score_5m"])
+            for direction in ("long", "short")
+        ]
+        if any(
+            value is None or not 0 <= value <= 2.5
+            or not math.isclose(value - bonus, 0.0, abs_tol=1e-9)
+            and not math.isclose(value - bonus, 0.5, abs_tol=1e-9)
+            for value, bonus in zip(timing_scores, bonuses)
+        ):
             continue
         if any(
             bool(row[f"{direction}_trigger_5m"]) != (bonus > 0)

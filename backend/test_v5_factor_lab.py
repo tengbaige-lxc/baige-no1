@@ -22,7 +22,8 @@ CONFIG = {
 }
 
 
-def _run_series(folder, daily_change):
+def _run_series(folder, daily_change, *, long_score=4.5,
+                long_timing_score=1.0):
     start = datetime(2026, 9, 1, tzinfo=timezone.utc)
     price = 100.0
     for index in range(20):
@@ -34,9 +35,10 @@ def _run_series(folder, daily_change):
         for observation in row["observations_by_pool"]["crypto"]:
             is_long = observation["direction"] == "LONG"
             observation.update(
-                score=4.5 if is_long else 1.0,
+                score=long_score if is_long else 1.0,
                 trigger_5m=is_long,
                 trigger_score_5m=1.0 if is_long else 0.0,
+                timing_score_5m=long_timing_score if is_long else 0.0,
             )
         archive_cross_sectional_scan(folder, row)
         price *= 1 + daily_change
@@ -65,6 +67,16 @@ def test_two_week_positive_holdout_recommends_review_only():
     assert report["independent_slots"] == 19
     assert report["sections"]["holdout"]["candidate"]["selected_legs"] == 8
     assert report["sections"]["holdout"]["delta_mean_slot_net_return"] > 0
+
+
+def test_candidate_removes_trigger_and_divergence_from_direction_score():
+    with TemporaryDirectory() as folder:
+        report = _run_series(
+            folder, 0.01, long_score=5.5, long_timing_score=1.5)
+    assert report["stage"] == "review_candidate"
+    assert report["sections"]["holdout"]["baseline"]["selected_legs"] == 0
+    assert report["sections"]["holdout"]["candidate"]["selected_legs"] == 8
+    assert report["auto_apply"] is False
 
 
 def test_two_week_negative_holdout_is_not_recommended():

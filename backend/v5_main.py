@@ -67,6 +67,7 @@ def strength_metadata(factors, score, config):
     structure_30m_aligned = bool((by_key.get('trend_v3_30m') or {}).get('triggered'))
     adx_factor = by_key.get('trend_v3_adx_atr') or {}
     timing_factor = by_key.get('trend_v3_5m')
+    structure_factor = by_key.get('trend_v3_structure_confirmation')
     adx_4h_strong = bool(adx_factor.get('triggered'))
     adx_raw = adx_factor.get('raw') or {}
     try:
@@ -79,6 +80,12 @@ def strength_metadata(factors, score, config):
         and structure_30m_aligned
         and adx_4h_strong
     )
+    timing_score = None
+    if timing_factor is not None and structure_factor is not None:
+        trigger = bool(timing_factor.get('triggered'))
+        trigger_score = float(timing_factor.get('score_added') or 0)
+        divergence = bool((structure_factor.get('raw') or {}).get('5m_divergence'))
+        timing_score = trigger_score + (0.5 if trigger and divergence else 0.0)
     return {
         'trend_4h_aligned': trend_4h_aligned,
         'structure_30m_aligned': structure_30m_aligned,
@@ -88,6 +95,7 @@ def strength_metadata(factors, score, config):
         'trigger_5m': bool(timing_factor.get('triggered')) if timing_factor else None,
         'trigger_score_5m': float(timing_factor.get('score_added') or 0)
                             if timing_factor else None,
+        'timing_score_5m': timing_score,
     }
 
 

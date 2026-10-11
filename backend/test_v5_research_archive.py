@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 
 from v5_research_archive import (
     ARCHIVE_FILE,
+    _connect,
     archive_cross_sectional_scan,
     research_summary,
 )
@@ -75,6 +76,51 @@ def test_archive_settles_first_available_24h_outcome():
     assert abs(summary["average_24h_directional_return"] - 0.1) < 1e-12
     assert summary["settled_24h_win_share"] == 1.0
     assert summary["readiness"]["stage"] == "collecting"
+
+
+def test_archive_preserves_separate_five_minute_timing_score():
+    start = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    row = payload(start.isoformat(), 100.0, "LIVE_HOLD", "2026-09-07T00")
+    row["cross_sectional_shadow_by_pool"]["crypto"]["legs"] = []
+    for observation in row["observations_by_pool"]["crypto"]:
+        is_long = observation["direction"] == "LONG"
+        observation["trigger_5m"] = is_long
+        observation["trigger_score_5m"] = 1.0 if is_long else 0.0
+        observation["timing_score_5m"] = 1.5 if is_long else 0.0
+    with TemporaryDirectory() as folder:
+        archive_cross_sectional_scan(folder, row)
+        with closing(sqlite3.connect(Path(folder) / ARCHIVE_FILE)) as connection:
+            stored = connection.execute(
+                "SELECT long_trigger_score_5m, long_timing_score_5m, "
+                "short_timing_score_5m FROM signal_observations"
+            ).fetchone()
+    assert stored == (1.0, 1.5, 0.0)
+
+
+def test_existing_archive_adds_timing_columns_without_replacing_rows():
+    with TemporaryDirectory() as folder:
+        path = Path(folder) / ARCHIVE_FILE
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute(
+                "CREATE TABLE signal_observations ("
+                "scan_at TEXT, scan_ts REAL, pool TEXT, symbol TEXT, "
+                "long_trigger_score_5m REAL, short_trigger_score_5m REAL)"
+            )
+            connection.execute(
+                "INSERT INTO signal_observations VALUES "
+                "('old', 1, 'crypto', 'AAA-USDT-SWAP', 1, 0)"
+            )
+            connection.commit()
+        with closing(_connect(folder)) as connection:
+            columns = {row[1] for row in connection.execute(
+                "PRAGMA table_info(signal_observations)"
+            )}
+            old = connection.execute(
+                "SELECT long_trigger_score_5m, short_trigger_score_5m "
+                "FROM signal_observations"
+            ).fetchone()
+    assert {"long_timing_score_5m", "short_timing_score_5m"} <= columns
+    assert tuple(old) == (1.0, 0.0)
 
 
 def test_live_crypto_rebalances_keep_both_daily_slots():
