@@ -129,8 +129,8 @@ def factor_lab_report(state_dir, config, cost_bps_per_side=3.0):
                       AND f.scan_ts <= o.scan_ts + 108000
                     ORDER BY f.scan_ts LIMIT 1) AS future_price
             FROM signal_observations o
-            JOIN shadow_rebalances r
-              ON r.rebalance_at = o.scan_at AND r.pool = o.pool
+            JOIN factor_lab_slots s
+              ON s.scan_at = o.scan_at AND s.pool = o.pool
             WHERE o.price > 0 AND o.volatility_30m > 0
             ORDER BY o.scan_ts, o.pool, o.symbol
             """

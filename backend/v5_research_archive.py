@@ -92,6 +92,14 @@ def _connect(state_dir):
             PRIMARY KEY (rebalance_day, pool)
         );
 
+        CREATE TABLE IF NOT EXISTS factor_lab_slots (
+            target_slot TEXT NOT NULL,
+            pool TEXT NOT NULL,
+            scan_at TEXT NOT NULL,
+            scan_ts REAL NOT NULL,
+            PRIMARY KEY (target_slot, pool)
+        );
+
         CREATE TABLE IF NOT EXISTS shadow_legs (
             rebalance_day TEXT NOT NULL,
             rebalance_ts REAL NOT NULL,
@@ -229,15 +237,30 @@ def archive_cross_sectional_scan(state_dir, payload):
         pool: plan for pool, plan in plans.items()
         if plan.get("status") in REBALANCE_STATUSES and plan.get("legs")
     }
-    inserted_observations = inserted_legs = 0
+    inserted_observations = inserted_legs = inserted_factor_slots = 0
     settled = {"6h": 0, "24h": 0, "72h": 0}
     with _open(state_dir) as connection:
-        # Five-minute observations are highly autocorrelated and previously grew
-        # the archive by tens of thousands of rows per day.  Persist the complete
-        # cross-section only when a real target slot is formed; every scan still
-        # contributes prices to forward-outcome settlement below.
-        if rebalance_plans:
+        # Capture one independent snapshot per target slot, including HOLD slots.
+        # Every scan still contributes prices to forward-outcome settlement below.
+        factor_pools = set()
+        observed_pools = {pool for pool, _, _ in observations}
+        for pool, plan in plans.items():
+            target_slot = plan.get("target_slot")
+            if pool not in observed_pools or not target_slot:
+                continue
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO factor_lab_slots
+                   (target_slot, pool, scan_at, scan_ts) VALUES (?, ?, ?, ?)""",
+                (str(target_slot), pool, completed, scan_ts),
+            )
+            if cursor.rowcount:
+                inserted_factor_slots += 1
+                factor_pools.add(pool)
+        snapshot_pools = set(rebalance_plans) | factor_pools
+        if snapshot_pools:
             for pool, symbol, row in observations:
+                if pool not in snapshot_pools:
+                    continue
                 connection.execute(
                     """
                     INSERT OR REPLACE INTO signal_observations(
@@ -380,10 +403,12 @@ def archive_cross_sectional_scan(state_dir, payload):
 
         cutoff = scan_ts - RETENTION_DAYS * 86400
         connection.execute("DELETE FROM signal_observations WHERE scan_ts < ?", (cutoff,))
+        connection.execute("DELETE FROM factor_lab_slots WHERE scan_ts < ?", (cutoff,))
         connection.execute("DELETE FROM shadow_legs WHERE rebalance_ts < ?", (cutoff,))
         connection.execute("DELETE FROM shadow_rebalances WHERE rebalance_ts < ?", (cutoff,))
     return {
         "signal_observations": inserted_observations,
+        "factor_lab_slots": inserted_factor_slots,
         "new_shadow_legs": inserted_legs,
         "settled_6h_outcomes": settled["6h"],
         "settled_24h_outcomes": settled["24h"],

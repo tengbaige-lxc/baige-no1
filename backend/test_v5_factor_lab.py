@@ -1,9 +1,12 @@
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 
 from test_v5_research_archive import payload
 from v5_factor_lab import factor_lab_report
-from v5_research_archive import archive_cross_sectional_scan
+from v5_research_archive import ARCHIVE_FILE, archive_cross_sectional_scan
 
 
 CONFIG = {
@@ -25,8 +28,9 @@ def _run_series(folder, daily_change):
     for index in range(20):
         row = payload(
             (start + timedelta(days=index)).isoformat(), price,
-            "LIVE_REBALANCE", f"2026-09-{index + 1:02d}T00",
+            "LIVE_HOLD", f"2026-09-{index + 1:02d}T00",
         )
+        row["cross_sectional_shadow_by_pool"]["crypto"]["legs"] = []
         for observation in row["observations_by_pool"]["crypto"]:
             is_long = observation["direction"] == "LONG"
             observation.update(
@@ -69,3 +73,27 @@ def test_two_week_negative_holdout_is_not_recommended():
     assert report["stage"] == "screened_no_improvement"
     assert report["review_recommended"] is False
     assert report["auto_apply"] is False
+
+
+def test_hold_slot_is_archived_once_without_rebalance():
+    with TemporaryDirectory() as folder:
+        row = payload(
+            datetime(2026, 9, 1, tzinfo=timezone.utc).isoformat(),
+            100.0, "LIVE_HOLD", "2026-09-01T00",
+        )
+        row["cross_sectional_shadow_by_pool"]["crypto"]["legs"] = []
+        first = archive_cross_sectional_scan(folder, row)
+        second = archive_cross_sectional_scan(folder, row)
+        with closing(sqlite3.connect(Path(folder) / ARCHIVE_FILE)) as db:
+            slots = db.execute("SELECT COUNT(*) FROM factor_lab_slots").fetchone()[0]
+            observations = db.execute(
+                "SELECT COUNT(*) FROM signal_observations"
+            ).fetchone()[0]
+            rebalances = db.execute(
+                "SELECT COUNT(*) FROM shadow_rebalances"
+            ).fetchone()[0]
+    assert first["factor_lab_slots"] == 1
+    assert second["factor_lab_slots"] == 0
+    assert slots == 1
+    assert observations == 1
+    assert rebalances == 0
