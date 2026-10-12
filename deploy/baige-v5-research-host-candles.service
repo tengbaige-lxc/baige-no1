@@ -1,0 +1,24 @@
+[Unit]
+Description=Baige V5 public closed-candle research collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=baige-research
+Group=baige-research
+WorkingDirectory=/opt/baige-v5-research
+StateDirectory=baige-v5-research
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/baige-v5-research/v5_research_candles.py --output /var/lib/baige-v5-research/candles.sqlite --days 90
+Nice=10
+CPUQuota=50%
+MemoryMax=1G
+TasksMax=32
+TimeoutStartSec=20min
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/baige-v5-research
+NoNewPrivileges=true
+UMask=0077

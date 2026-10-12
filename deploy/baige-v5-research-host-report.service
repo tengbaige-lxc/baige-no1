@@ -1,0 +1,23 @@
+[Unit]
+Description=Baige V5 read-only candidate factor research report
+
+[Service]
+Type=oneshot
+User=baige-research
+Group=baige-research
+WorkingDirectory=/opt/baige-v5-research
+StateDirectory=baige-v5-research
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/baige-v5-research/v5_candidate_research.py --state-dir /var/lib/baige-v5-research --candle-db /var/lib/baige-v5-research/candles.sqlite --output /var/lib/baige-v5-research/reports/latest.json
+Nice=10
+CPUQuota=50%
+MemoryMax=1G
+TasksMax=32
+TimeoutStartSec=5min
+PrivateNetwork=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/baige-v5-research
+NoNewPrivileges=true
+UMask=0077
