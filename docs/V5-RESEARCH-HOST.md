@@ -16,8 +16,8 @@
 
 ## 调度与资源
 
-- `baige-v5-research-host-candles.timer` 每日 00:40 UTC 左右采集。
-- `baige-v5-research-host-report.timer` 每日 01:10 UTC 左右生成报告。
+- `baige-v5-research-host-candles.timer` 每日 20:10 UTC（次日北京时间 04:10）左右采集。
+- `baige-v5-research-host-report.timer` 每日 20:40 UTC（次日北京时间 04:40）左右生成报告。
 - 两个 oneshot 服务使用独立的 `baige-research` 用户，单次最多 1 GiB 内存、50% 单核 CPU；报告服务无网络权限。
 - 研究机只有 2 核且没有 swap，大规模全币种回测不得与现有网站/股票服务并发运行。
 

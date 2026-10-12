@@ -2,7 +2,7 @@
 Description=Collect Baige V5 public closed candles daily
 
 [Timer]
-OnCalendar=*-*-* 00:40:00 UTC
+OnCalendar=*-*-* 20:10:00 UTC
 Persistent=true
 RandomizedDelaySec=5min
 Unit=baige-v5-research-host-candles.service

@@ -2,7 +2,7 @@
 Description=Generate Baige V5 candidate research report daily
 
 [Timer]
-OnCalendar=*-*-* 01:10:00 UTC
+OnCalendar=*-*-* 20:40:00 UTC
 Persistent=true
 RandomizedDelaySec=5min
 Unit=baige-v5-research-host-report.service
